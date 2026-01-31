@@ -1,0 +1,90 @@
+{
+  "version": "0.1",
+  "catalogName": "mdssed_like_demo_home",
+  "devices": [
+    {
+      "id": "motion_hall",
+      "label": "Hallway Motion Sensor",
+      "kind": "motionSensor",
+      "room": "Hallway",
+      "bindings": {
+        "homeAssistant": { "entity_id": "binary_sensor.hall_motion" },
+        "smartThings": { "deviceId": "UUID-REPLACE-ME", "component": "main" }
+      }
+    },
+    {
+      "id": "light_hall",
+      "label": "Hallway Light",
+      "kind": "switch",
+      "room": "Hallway",
+      "bindings": {
+        "homeAssistant": { "entity_id": "light.hall" },
+        "smartThings": { "deviceId": "UUID-REPLACE-ME", "component": "main" }
+      }
+    },
+    {
+      "id": "door_front",
+      "label": "Front Door Contact Sensor",
+      "kind": "contactSensor",
+      "room": "Entrance",
+      "bindings": {
+        "homeAssistant": { "entity_id": "binary_sensor.front_door" },
+        "smartThings": { "deviceId": "UUID-REPLACE-ME", "component": "main" }
+      }
+    },
+    {
+      "id": "lock_front",
+      "label": "Front Door Lock",
+      "kind": "lock",
+      "room": "Entrance",
+      "bindings": {
+        "homeAssistant": { "entity_id": "lock.front_door" },
+        "smartThings": { "deviceId": "UUID-REPLACE-ME", "component": "main" }
+      }
+    },
+    {
+      "id": "presence_user",
+      "label": "User Presence",
+      "kind": "presenceSensor",
+      "room": "N/A",
+      "bindings": {
+        "homeAssistant": { "entity_id": "person.sohil" },
+        "smartThings": { "deviceId": "UUID-REPLACE-ME", "component": "main" }
+      }
+    }
+    ,
+    {
+      "id": "alarm_main",
+      "label": "Main Alarm/Siren",
+      "kind": "alarm",
+      "room": "N/A",
+      "bindings": {
+        "homeAssistant": { "entity_id": "siren.house" },
+        "smartThings": { "deviceId": "UUID-REPLACE-ME", "component": "main" }
+      }
+    }
+  ],
+
+  "globals": [
+    {
+      "id": "location",
+      "kind": "location",
+      "bindings": {
+        "homeAssistant": { "entity_id": "input_select.house_mode" },
+        "smartThings": { "locationId": "UUID-REPLACE-ME" }
+      }
+    }
+  ],
+
+  "nlHints": {
+    "aliases": {
+      "Hallway light": "light_hall",
+      "Hall motion": "motion_hall",
+      "Front door": "door_front",
+      "Front lock": "lock_front",
+      "me": "presence_user",
+      "alarm": "alarm_main",
+      "siren": "alarm_main"
+    }
+  }
+}

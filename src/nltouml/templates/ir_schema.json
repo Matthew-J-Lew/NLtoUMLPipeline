@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/iot-ir.schema.json",
+  "title": "Universal IoT Automation IR v0",
+  "type": "object",
+  "required": ["version", "devices", "stateMachine"],
+  "properties": {
+    "version": { "type": "string", "enum": ["0.1"] },
+
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "kind": { "type": "string" },
+          "capabilities": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
+    "stateMachine": {
+      "type": "object",
+      "required": ["initial", "states", "transitions"],
+      "properties": {
+        "initial": { "type": "string" },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "invariants": { "$ref": "#/$defs/exprList" }
+            }
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "triggers", "actions"],
+            "properties": {
+              "id": { "type": "string" },
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "triggers": { "$ref": "#/$defs/triggerList" },
+              "guard": { "$ref": "#/$defs/expr" },
+              "actions": { "$ref": "#/$defs/actionList" }
+            }
+          }
+        }
+      }
+    },
+
+    "bindings": {
+      "type": "object",
+      "description": "Optional platform-specific bindings for downstream codegen.",
+      "properties": {
+        "homeAssistant": {
+          "type": "object",
+          "properties": {
+            "entityMap": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "entity_id": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "smartThings": {
+          "type": "object",
+          "properties": {
+            "locationId": { "type": "string" },
+            "deviceMap": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "deviceId": { "type": "string" },
+                  "component": { "type": "string", "default": "main" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "ref": {
+      "type": "object",
+      "required": ["device", "path"],
+      "properties": {
+        "device": { "type": "string" },
+        "path": {
+          "type": "string",
+          "description": "Attribute reference path, e.g. 'motion', 'switch', 'lock', 'presence'."
+        }
+      }
+    },
+
+    "literal": {
+      "type": "object",
+      "oneOf": [
+        { "required": ["string"], "properties": { "string": { "type": "string" } } },
+        { "required": ["number"], "properties": { "number": { "type": "number" } } },
+        { "required": ["bool"], "properties": { "bool": { "type": "boolean" } } }
+      ]
+    },
+
+    "expr": {
+      "type": "object",
+      "oneOf": [
+        { "required": ["ref"], "properties": { "ref": { "$ref": "#/$defs/ref" } } },
+        { "required": ["lit"], "properties": { "lit": { "$ref": "#/$defs/literal" } } },
+
+        {
+          "required": ["op", "args"],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": ["eq", "neq", "lt", "lte", "gt", "gte", "and", "or", "not"]
+            },
+            "args": { "type": "array", "items": { "$ref": "#/$defs/expr" } }
+          }
+        }
+      ]
+    },
+
+    "exprList": { "type": "array", "items": { "$ref": "#/$defs/expr" } },
+
+    "trigger": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": ["type", "ref", "value"],
+          "properties": {
+            "type": { "const": "becomes" },
+            "ref": { "$ref": "#/$defs/ref" },
+            "value": { "$ref": "#/$defs/literal" }
+          }
+        },
+        {
+          "required": ["type", "ref"],
+          "properties": {
+            "type": { "const": "changes" },
+            "ref": { "$ref": "#/$defs/ref" }
+          }
+        },
+        {
+          "required": ["type", "cron"],
+          "properties": {
+            "type": { "const": "schedule" },
+            "cron": { "type": "string" }
+          }
+        },
+        {
+          "required": ["type", "seconds"],
+          "properties": {
+            "type": { "const": "after" },
+            "seconds": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+
+    "triggerList": { "type": "array", "items": { "$ref": "#/$defs/trigger" } },
+
+    "action": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": ["type", "device", "command"],
+          "properties": {
+            "type": { "const": "command" },
+            "device": { "type": "string" },
+            "command": { "type": "string" },
+            "args": { "type": "array", "items": { "$ref": "#/$defs/literal" } }
+          }
+        },
+        {
+          "required": ["type", "seconds"],
+          "properties": {
+            "type": { "const": "delay" },
+            "seconds": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "required": ["type", "message"],
+          "properties": {
+            "type": { "const": "notify" },
+            "message": { "type": "string" }
+          }
+        }
+      ]
+    },
+
+    "actionList": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+  }
+}

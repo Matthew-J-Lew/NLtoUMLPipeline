@@ -1,0 +1,210 @@
+{
+  "version": "0.1",
+  "notes": [
+    "This is a portable subset aimed at MDSSED-style automations.",
+    "SmartThings capabilities are composed of Attributes + Commands; many sensor capabilities are read-only (no commands).",
+    "PresenceSensor uses values: 'present' and 'not present'.",
+    "Alarm supports commands strobe/siren/both/off and attribute values strobe/siren/both/off."
+  ],
+  "valueSets": {
+    "binaryOnOff": ["on", "off"],
+    "motionActiveInactive": ["active", "inactive"],
+    "contactOpenClosed": ["open", "closed"],
+    "presencePresentNotPresent": ["present", "not present"],
+    "lockLockedUnlocked": ["locked", "unlocked"],
+    "alarmStates": ["off", "strobe", "siren", "both"]
+  },
+  "kinds": {
+    "motionSensor": {
+      "attributes": {
+        "motion": { "type": "enum", "valuesFrom": "motionActiveInactive" }
+      },
+      "commands": {},
+      "nlAliases": {
+        "motion.motion": ["motion", "movement", "detected motion", "no motion"]
+      },
+      "platform": {
+        "smartThings": {
+          "capability": "motionSensor",
+          "attribute": "motion",
+          "enum": ["active", "inactive"],
+          "commands": []
+        },
+        "homeAssistant": {
+          "entityDomains": ["binary_sensor"],
+          "attributeOrState": "state",
+          "mapToIR": { "on": "active", "off": "inactive" }
+        }
+      }
+    },
+
+    "contactSensor": {
+      "attributes": {
+        "contact": { "type": "enum", "valuesFrom": "contactOpenClosed" }
+      },
+      "commands": {},
+      "nlAliases": {
+        "contactSensor.contact": ["door", "window", "contact", "opened", "closed"]
+      },
+      "platform": {
+        "smartThings": {
+          "capability": "contactSensor",
+          "attribute": "contact",
+          "enum": ["open", "closed"],
+          "commands": []
+        },
+        "homeAssistant": {
+          "entityDomains": ["binary_sensor"],
+          "attributeOrState": "state",
+          "mapToIR": { "on": "open", "off": "closed" }
+        }
+      }
+    },
+
+    "presenceSensor": {
+      "attributes": {
+        "presence": { "type": "enum", "valuesFrom": "presencePresentNotPresent" }
+      },
+      "commands": {},
+      "nlAliases": {
+        "presenceSensor.presence": ["arrives", "leaves", "home", "away", "present"]
+      },
+      "platform": {
+        "smartThings": {
+          "capability": "presenceSensor",
+          "attribute": "presence",
+          "enum": ["present", "not present"],
+          "commands": []
+        },
+        "homeAssistant": {
+          "entityDomains": ["person", "device_tracker", "binary_sensor"],
+          "attributeOrState": "state",
+          "mapToIR": {
+            "home": "present",
+            "not_home": "not present",
+            "on": "present",
+            "off": "not present"
+          }
+        }
+      }
+    },
+
+    "switch": {
+      "attributes": {
+        "switch": { "type": "enum", "valuesFrom": "binaryOnOff" }
+      },
+      "commands": {
+        "on": { "args": [] },
+        "off": { "args": [] }
+      },
+      "nlAliases": {
+        "switch.switch": ["switch", "light", "plug", "turn on", "turn off"]
+      },
+      "platform": {
+        "smartThings": {
+          "capability": "switch",
+          "attribute": "switch",
+          "enum": ["on", "off"],
+          "commands": ["on", "off"]
+        },
+        "homeAssistant": {
+          "entityDomains": ["switch", "light"],
+          "services": {
+            "on": ["switch.turn_on", "light.turn_on"],
+            "off": ["switch.turn_off", "light.turn_off"]
+          }
+        }
+      }
+    },
+
+    "lock": {
+      "attributes": {
+        "lock": { "type": "enum", "valuesFrom": "lockLockedUnlocked" }
+      },
+      "commands": {
+        "lock": { "args": [] },
+        "unlock": { "args": [] }
+      },
+      "nlAliases": {
+        "lock.lock": ["lock", "unlock", "door lock", "deadbolt"]
+      },
+      "platform": {
+        "smartThings": {
+          "capability": "lock",
+          "attribute": "lock",
+          "enum": ["locked", "unlocked"],
+          "commands": ["lock", "unlock"]
+        },
+        "homeAssistant": {
+          "entityDomains": ["lock"],
+          "services": {
+            "lock": ["lock.lock"],
+            "unlock": ["lock.unlock"]
+          }
+        }
+      }
+    },
+
+    "alarm": {
+      "attributes": {
+        "alarm": { "type": "enum", "valuesFrom": "alarmStates" }
+      },
+      "commands": {
+        "strobe": { "args": [] },
+        "siren": { "args": [] },
+        "both": { "args": [] },
+        "off": { "args": [] }
+      },
+      "nlAliases": {
+        "alarm.alarm": ["alarm", "siren", "strobe", "sound alarm", "turn off alarm"]
+      },
+      "platform": {
+        "smartThings": {
+          "capability": "alarm",
+          "attribute": "alarm",
+          "enum": ["off", "strobe", "siren", "both"],
+          "commands": ["strobe", "siren", "both", "off"]
+        },
+        "homeAssistant": {
+          "entityDomains": ["siren", "switch"],
+          "notes": [
+            "HA siren APIs vary by integration; treat as adapter-specific.",
+            "A common approach is siren.turn_on with parameters, or a switch-like entity."
+          ]
+        }
+      }
+    },
+
+    "location": {
+      "kindType": "pseudo",
+      "attributes": {
+        "mode": {
+          "type": "string",
+          "openEnum": true,
+          "examples": ["Home", "Away", "Night"]
+        }
+      },
+      "commands": {
+        "setMode": { "args": [{ "type": "string" }] }
+      },
+      "nlAliases": {
+        "location.mode": ["mode", "home mode", "away mode", "night mode"]
+      },
+      "platform": {
+        "smartThings": {
+          "notes": [
+            "In legacy SmartApps, location mode is commonly used (location.mode / setLocationMode).",
+            "In Rules, location is handled via dedicated operands/actions; adapter must implement."
+          ]
+        },
+        "homeAssistant": {
+          "notes": [
+            "Often represented via input_select, scene, or helper entities.",
+            "Adapter decides how to bind 'mode' (e.g., input_select.house_mode)."
+          ]
+          }
+        }
+      }
+    }
+  }
+

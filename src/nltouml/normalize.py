@@ -209,8 +209,28 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                     #   {deviceId, attribute, event:'becomes', value:'active'}
                     #   {deviceId, attribute, type:'becomes', value:{string:'active'}}
 
+                    # Device/attribute reference can appear in multiple common shapes.
+                    # Canonical is: ref:{device:<id>, path:<attr>}
+                    ref = t.get("ref")
                     dev = t.get("device") or t.get("deviceId") or t.get("device_id")
-                    attr = t.get("path") or t.get("attribute") or t.get("attr")
+                    attr = (
+                        t.get("path")
+                        or t.get("attribute")
+                        or t.get("attr")
+                        or t.get("property")
+                        or t.get("prop")
+                    )
+                    if isinstance(ref, dict):
+                        dev = dev or ref.get("device") or ref.get("deviceId") or ref.get("device_id")
+                        attr = (
+                            attr
+                            or ref.get("path")
+                            or ref.get("attribute")
+                            or ref.get("attr")
+                            or ref.get("property")
+                            or ref.get("prop")
+                        )
+
                     typ = t.get("type") or t.get("condition") or t.get("event")
 
                     # Support timer/after triggers in a few common shapes:
@@ -238,9 +258,19 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                     if typ is None and "becomes" in t:
                         typ = "becomes"
 
+                    # If a type is missing but we have a ref-like payload, infer conservatively.
+                    if typ is None and isinstance(dev, str) and isinstance(attr, str):
+                        if any(k in t for k in ("value", "equals", "state", "becomes", "val")):
+                            typ = "becomes"
+                        else:
+                            typ = "changes"
+
                     # Special case: schedule-ish
                     if typ is None and any(k in t for k in ("cron", "schedule", "time")):
                         typ = "schedule"
+
+                    if isinstance(typ, str):
+                        typ = typ.strip()
 
                     if isinstance(typ, str):
                         typ = typ.strip()
@@ -256,13 +286,15 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                             v = t.get("value")
                             if v is None and "becomes" in t:
                                 v = t.get("becomes")
+                            if v is None:
+                                v = t.get("equals") or t.get("state") or t.get("val")
                             if isinstance(v, dict) and any(k in v for k in ("string", "number", "bool")):
                                 new_t["value"] = v
                             else:
                                 new_t["value"] = _to_literal(v)
 
                         elif typ == "schedule":
-                            cron = t.get("cron") or t.get("schedule") or t.get("time")
+                            cron = t.get("cron") or t.get("schedule") or t.get("time") or t.get("at") or t.get("event")
                             if isinstance(cron, str):
                                 new_t["cron"] = cron
                             else:
@@ -283,6 +315,7 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
             # actions
             actions = tr.get("actions")
             if isinstance(actions, list):
+                coerced_actions = []
                 for a in actions:
                     if not isinstance(a, dict):
                         continue
@@ -351,8 +384,13 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                         dev_id = a.get("device")
                         cmd = a.get("command")
                         if isinstance(dev_id, str) and isinstance(cmd, str):
+                            # Drop placeholder/no-op commands that otherwise fail catalog validation.
+                            c0 = cmd.strip().lower()
+                            if c0 in ("none", "noop", "no-op", "do_nothing", "do nothing", "nothing"):
+                                continue
+
                             kind = id_to_kind.get(dev_id)
-                            c = cmd.strip().lower()
+                            c = c0
                             # People say "turn on the alarm"; our alarm kind uses siren/strobe/both/off.
                             if kind == "alarm" and c == "on":
                                 a["command"] = "siren"
@@ -368,6 +406,11 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                             else:
                                 # Guarantee schema-required field.
                                 a["message"] = ""
+
+                    coerced_actions.append(a)
+
+                # Replace list in-place to avoid leaving invalid/no-op actions behind.
+                tr["actions"] = coerced_actions
 
     return ir
 

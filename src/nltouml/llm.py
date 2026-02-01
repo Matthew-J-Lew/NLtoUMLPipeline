@@ -85,6 +85,8 @@ def openai_generate_json(
                 # JSON mode: guarantees valid JSON (but not schema adherence).
                 # This greatly reduces flaky parsing failures.
                 text={"format": {"type": "json_object"}},
+                # Make runs repeatable for metrics (reduces variance across runs).
+                temperature=0,
             )
             text = getattr(resp, "output_text", None)
             if text is None:
@@ -105,6 +107,7 @@ def openai_generate_json(
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            temperature=0,
         )
     except Exception:
         resp = client.chat.completions.create(
@@ -113,6 +116,7 @@ def openai_generate_json(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            temperature=0,
         )
     text = resp.choices[0].message.content or ""
     return LLMResult(text=text, raw=resp)

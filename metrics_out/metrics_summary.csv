@@ -1,0 +1,2 @@
+total_scenarios,metric1_completed,metric1_completion_rate,metric2_completed,schema_valid_irs,schema_valid_rate,validation_ok_irs,validation_ok_rate,avg_schema_errors_per_schema_failed_ir,avg_constraint_coverage,metric1_max_repairs,metric2_max_repairs,use_mock
+20,20,1.0,20,19,0.95,19,0.95,1,0.9674,1,0,False

@@ -1,0 +1,15 @@
+{
+  "total_scenarios": 20,
+  "metric1_completed": 20,
+  "metric1_completion_rate": 1.0,
+  "metric2_completed": 20,
+  "schema_valid_irs": 19,
+  "schema_valid_rate": 0.95,
+  "validation_ok_irs": 19,
+  "validation_ok_rate": 0.95,
+  "avg_schema_errors_per_schema_failed_ir": 1,
+  "avg_constraint_coverage": 0.9674,
+  "metric1_max_repairs": 1,
+  "metric2_max_repairs": 0,
+  "use_mock": false
+}

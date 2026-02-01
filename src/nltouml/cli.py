@@ -7,11 +7,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .config import load_settings
+from .metrics import run_metrics
 from .pipeline import PipelineError, run_pipeline
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="nltouml", description="NL -> IR -> PlantUML state machine")
+def build_run_parser(prog: str = "nltouml") -> argparse.ArgumentParser:
+    """Backward-compatible parser for `nltouml --text ...` and `nlpipeline --text ...`."""
+    p = argparse.ArgumentParser(prog=prog, description="NL -> IR -> PlantUML state machine")
     p.add_argument("--text", required=True, help="Natural language requirement")
     p.add_argument("--bundle-name", default="Bundle1", help="Output bundle folder name")
     p.add_argument("--out-dir", default="outputs", help="Output directory")
@@ -28,9 +30,78 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def build_metrics_parser(prog: str = "nltouml") -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog=f"{prog} metrics",
+        description="Run metrics over a scenarios.csv file",
+    )
+    p.add_argument("--scenarios", required=True, help="Path to scenarios.csv")
+    p.add_argument("--out-dir", default="metrics_out", help="Where to write metrics outputs")
+    p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+    p.add_argument("--mock", action="store_true", help="Run without an LLM (deterministic demo)")
+
+    # Metric 1: completion (by default allow 1 repair, but user can set 0).
+    p.add_argument(
+        "--metric1-max-repairs",
+        type=int,
+        default=1,
+        help="Max LLM repair attempts for Metric 1 runs",
+    )
+    # Metric 2/3: initial output (no repairs by default).
+    p.add_argument(
+        "--metric2-max-repairs",
+        type=int,
+        default=0,
+        help="Max LLM repair attempts for Metric 2/3 runs (0 = first try)",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional limit on number of scenarios to run",
+    )
+    return p
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()  # read .env if present
-    args = build_parser().parse_args(argv)
+    argv = list(argv) if argv is not None else None
+
+    # Backward compatible: `nlpipeline --text ...` keeps working.
+    # New: `nlpipeline metrics --scenarios scenarios.csv`
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if len(argv) > 0 and argv[0] == "metrics":
+        margs = build_metrics_parser(prog="nltouml").parse_args(argv[1:])
+        settings = load_settings(templates_dir=margs.templates_dir)
+        try:
+            outputs = run_metrics(
+                scenarios_path=Path(margs.scenarios),
+                out_dir=Path(margs.out_dir),
+                settings=settings,
+                use_mock=margs.mock,
+                metric1_max_repairs=margs.metric1_max_repairs,
+                metric2_max_repairs=margs.metric2_max_repairs,
+                limit=margs.limit,
+            )
+        except PipelineError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        print(f"Wrote per-scenario results: {outputs['per_scenario_csv']}")
+        print(f"Wrote metrics summary:      {outputs['summary_csv']}")
+        print(f"Run artifacts under:        {outputs['runs_dir']}")
+        return 0
+
+    args = build_run_parser(prog="nltouml").parse_args(argv)
 
     settings = load_settings(templates_dir=args.templates_dir)
     try:

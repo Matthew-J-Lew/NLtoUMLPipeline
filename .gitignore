@@ -28,6 +28,7 @@ Thumbs.db
 outputs/
 runs/
 validation/
+metrics_out/
 
 # Logs
 *.log

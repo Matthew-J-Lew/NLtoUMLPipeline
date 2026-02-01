@@ -48,7 +48,7 @@
       "kind": "presenceSensor",
       "room": "N/A",
       "bindings": {
-        "homeAssistant": { "entity_id": "person.sohil" },
+        "homeAssistant": { "entity_id": "person.user" },
         "smartThings": { "deviceId": "UUID-REPLACE-ME", "component": "main" }
       }
     }

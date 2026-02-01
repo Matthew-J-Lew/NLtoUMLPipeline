@@ -55,7 +55,7 @@ nlpipeline --bundle-name Ex3_PresenceLock --text "When I am not present, lock th
 nlpipeline --bundle-name Ex4_DoorAlarmDelayed --text "When the front door opens, wait 30 seconds. If the front door is still open, turn on the alarm. When the front door closes, turn the alarm off."
 nlpipeline --bundle-name Ex5_MotionPresenceLighting --text "When I become not present, lock the front door and turn off the hallway light. When I become present, unlock the front door."
 nlpipeline --bundle-name Ex10_TimedLightBurst --text 'When motion is detected, turn on the hallway light for 30 seconds, then turn it off.' --max-repairs 2
-nlpipeline --bundle-name Ex11_DoorWaitThenAlarm --text 'When the front door opens, wait 30 seconds, then turn on the alarm. When the front door closes, turn the alarm off.' --max-repairs 0
+nlpipeline --bundle-name Ex11_DoorWaitThenAlarm --text 'When the front door opens, wait 30 seconds, then turn on the alarm. When the front door closes, turn the alarm off.' --max-repairs 2
 
 
 

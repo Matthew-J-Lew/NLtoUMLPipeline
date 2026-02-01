@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 from dataclasses import dataclass
@@ -403,3 +404,59 @@ def run_metrics(
         "summary_csv": summary_csv,
         "runs_dir": runs_dir,
     }
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="nltouml.metrics",
+        description="Run evaluation metrics over scenarios.csv (completion, schema validity, constraint coverage)",
+    )
+    p.add_argument("--scenarios", required=True, help="Path to scenarios.csv")
+    p.add_argument("--out-dir", default="metrics_out", help="Directory to write metrics outputs")
+    p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+    p.add_argument("--mock", action="store_true", help="Run without an LLM (deterministic demo)")
+    p.add_argument("--metric1-max-repairs", type=int, default=1, help="Max repairs for Metric 1 runs")
+    p.add_argument("--metric2-max-repairs", type=int, default=0, help="Max repairs for Metric 2 runs")
+    p.add_argument("--limit", type=int, default=None, help="Limit number of scenarios (debug)")
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    args = build_arg_parser().parse_args(argv)
+
+    # Import here to avoid circular imports.
+    from .config import load_settings
+
+    settings = load_settings(templates_dir=args.templates_dir)
+    try:
+        out_paths = run_metrics(
+            scenarios_path=Path(args.scenarios),
+            out_dir=Path(args.out_dir),
+            settings=settings,
+            use_mock=bool(args.mock),
+            metric1_max_repairs=int(args.metric1_max_repairs),
+            metric2_max_repairs=int(args.metric2_max_repairs),
+            limit=args.limit,
+        )
+    except PipelineError as e:
+        print(f"ERROR: {e}")
+        return 2
+
+    print(f"Wrote per-scenario CSV: {out_paths['per_scenario_csv']}")
+    print(f"Wrote summary CSV:      {out_paths['summary_csv']}")
+    print(f"Wrote run artifacts:    {out_paths['runs_dir']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

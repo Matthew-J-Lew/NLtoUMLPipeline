@@ -48,6 +48,8 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
             id_to_kind[str(d["id"])] = str(d["kind"])
 
     # --- devices ---
+    # Some LLM outputs omit the top-level devices list entirely, or only reference devices
+    # inside triggers/actions. We infer a minimal devices[] list from any references we can find.
     devs = ir.get("devices")
     if isinstance(devs, list):
         # If devices are just strings, expand to objects
@@ -64,6 +66,45 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                 if "kind" not in d and isinstance(d.get("id"), str):
                     d["kind"] = id_to_kind.get(d["id"], d.get("kind", "unknown"))
 
+    # If devices are missing or empty, infer them from references.
+    if not isinstance(ir.get("devices"), list) or not ir.get("devices"):
+        inferred: Dict[str, str] = {}
+        sm0 = ir.get("stateMachine")
+        if isinstance(sm0, dict):
+            trans0 = sm0.get("transitions")
+            if isinstance(trans0, list):
+                for tr0 in trans0:
+                    if not isinstance(tr0, dict):
+                        continue
+                    # triggers may appear as 'trigger' (singular) or 'triggers' (list)
+                    trig_any = tr0.get("triggers")
+                    if isinstance(trig_any, dict):
+                        trig_any = [trig_any]
+                    if not isinstance(trig_any, list) and isinstance(tr0.get("trigger"), dict):
+                        trig_any = [tr0.get("trigger")]
+                    if isinstance(trig_any, list):
+                        for t0 in trig_any:
+                            if isinstance(t0, dict):
+                                dev_id = t0.get("device") or t0.get("deviceId") or t0.get("device_id")
+                                if isinstance(dev_id, str):
+                                    inferred[dev_id] = id_to_kind.get(dev_id, "unknown")
+
+                    act_any = tr0.get("actions")
+                    if isinstance(act_any, dict):
+                        act_any = [act_any]
+                    if not isinstance(act_any, list) and isinstance(tr0.get("action"), dict):
+                        act_any = [tr0.get("action")]
+                    if isinstance(act_any, list):
+                        for a0 in act_any:
+                            if isinstance(a0, dict):
+                                dev_id = a0.get("device") or a0.get("deviceId") or a0.get("device_id")
+                                if isinstance(dev_id, str):
+                                    inferred[dev_id] = id_to_kind.get(dev_id, "unknown")
+
+        # Only set devices if we found at least one reference.
+        if inferred:
+            ir["devices"] = [{"id": did, "kind": kind} for did, kind in sorted(inferred.items())]
+
     sm = ir.get("stateMachine")
     if not isinstance(sm, dict):
         return ir
@@ -71,6 +112,11 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
     # --- states ---
     states = sm.get("states")
     if isinstance(states, list):
+        # Common "almost-IR" variant: states as string names
+        if states and all(isinstance(s, str) for s in states):
+            sm["states"] = [{"id": s} for s in states]
+            states = sm["states"]
+
         for st in states:
             if not isinstance(st, dict):
                 continue
@@ -80,12 +126,72 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
             if "name" in st and "id" in st and st["name"] == st["id"]:
                 st.pop("name", None)
 
-    # --- transitions (triggers/actions) ---
+    # --- initial ---
+    # If initial is missing, infer from first state, otherwise use a safe default.
+    if "initial" not in sm or not isinstance(sm.get("initial"), str) or not sm.get("initial"):
+        first_state_id = None
+        sts = sm.get("states")
+        if isinstance(sts, list) and sts:
+            s0 = sts[0]
+            if isinstance(s0, dict) and isinstance(s0.get("id"), str):
+                first_state_id = s0.get("id")
+        sm["initial"] = first_state_id or "Idle"
+
+    # --- transitions (shape coercion + triggers/actions) ---
     transitions = sm.get("transitions")
     if isinstance(transitions, list):
+        # Collect known state ids for light inference.
+        state_ids = []
+        sts = sm.get("states")
+        if isinstance(sts, list):
+            for s in sts:
+                if isinstance(s, dict) and isinstance(s.get("id"), str):
+                    state_ids.append(s["id"])
+
         for tr in transitions:
             if not isinstance(tr, dict):
                 continue
+
+            # Canonical transition keys required by schema: from, to, triggers, actions
+            # Common variants: source/target, state/next, trigger/actions singular, etc.
+            if "to" not in tr and "target" in tr:
+                tr["to"] = tr.pop("target")
+            if "to" not in tr and "next" in tr:
+                tr["to"] = tr.pop("next")
+            if "from" not in tr and "source" in tr:
+                tr["from"] = tr.pop("source")
+            if "from" not in tr and "state" in tr:
+                tr["from"] = tr.pop("state")
+
+            # Wrap singular trigger/action into lists under canonical keys.
+            if "triggers" not in tr and isinstance(tr.get("trigger"), dict):
+                tr["triggers"] = [tr.pop("trigger")]
+            if "actions" not in tr and isinstance(tr.get("action"), dict):
+                tr["actions"] = [tr.pop("action")]
+
+            # If triggers/actions are dicts (not lists), wrap them.
+            if isinstance(tr.get("triggers"), dict):
+                tr["triggers"] = [tr["triggers"]]
+            if isinstance(tr.get("actions"), dict):
+                tr["actions"] = [tr["actions"]]
+
+            # If from/to missing, try minimal inference to satisfy schema.
+            if "from" not in tr or not isinstance(tr.get("from"), str) or not tr.get("from"):
+                tr["from"] = sm.get("initial") if isinstance(sm.get("initial"), str) else (state_ids[0] if state_ids else "Idle")
+            if "to" not in tr or not isinstance(tr.get("to"), str) or not tr.get("to"):
+                # Pick a different state if possible
+                fallback_to = None
+                for sid in state_ids:
+                    if sid != tr.get("from"):
+                        fallback_to = sid
+                        break
+                tr["to"] = fallback_to or tr.get("from")
+
+            # Ensure actions/triggers exist as lists for schema; if missing, create empty lists
+            if "triggers" not in tr or not isinstance(tr.get("triggers"), list):
+                tr["triggers"] = []
+            if "actions" not in tr or not isinstance(tr.get("actions"), list):
+                tr["actions"] = []
 
             # triggers
             triggers = tr.get("triggers")

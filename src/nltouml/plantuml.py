@@ -3,9 +3,14 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
+def _escape_puml_string(s: str) -> str:
+    # PlantUML strings are quoted with ". Keep escaping minimal and predictable.
+    return s.replace("\\", r"\\").replace('"', r'\"')
+
+
 def _lit_to_str(lit: Dict[str, Any]) -> str:
     if "string" in lit:
-        return f"\"{lit['string']}\""
+        return f"\"{_escape_puml_string(str(lit['string']))}\""
     if "number" in lit:
         return str(lit['number'])
     if "bool" in lit:
@@ -91,6 +96,39 @@ def ir_to_plantuml(ir: Dict[str, Any], title: str = "Automation") -> str:
     lines: List[str] = []
     lines.append("@startuml")
     lines.append(f"title {title}")
+    lines.append("")
+
+    # Human-editing cheat sheet (kept as comments so it won't affect rendering).
+    lines.extend(
+        [
+            "' === Human-editable guide ===",
+            "' You may edit this diagram and round-trip it back into IR:",
+            "'   nlpipeline roundtrip --puml outputs/<Bundle>/edited.puml",
+            "'",
+            "' Supported label lines (one per line, joined with \\n in PlantUML):",
+            "'   TRIGGER: <dev>.<attr> becomes \"value\" AND <dev>.<attr> changes AND after 30s AND schedule <cron>",
+            "'   GUARD:   (<dev>.<attr> == \"value\") and not (<dev>.<attr> != \"value\")",
+            "'   ACTION:  <dev>.<command>(\"arg\", 1) | delay 30s | notify \"message\"",
+            "'",
+            "' Tip: Prefer renaming the *display label* in a state declaration:",
+            "'   state \"Hallway Light On\" as LightOn",
+            "' Keep the alias (LightOn) stable so transitions remain parseable.",
+            "' =============================",
+            "",
+        ]
+    )
+
+    # Declare states explicitly so users can rename display labels without breaking IDs.
+    # If a state contains a 'label' field, we use it; otherwise we default to its id.
+    for st in states:
+        if not isinstance(st, dict):
+            continue
+        sid = st.get("id")
+        if not isinstance(sid, str) or not sid:
+            continue
+        label = st.get("label") if isinstance(st.get("label"), str) else sid
+        lines.append(f'state "{_escape_puml_string(label)}" as {sid}')
+
     lines.append("")
     lines.append(f"[*] --> {initial}")
     lines.append("")

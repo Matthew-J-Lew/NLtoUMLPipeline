@@ -47,7 +47,7 @@ OPENAI_MODEL=gpt-5
 Run:
 
 ```bash
-nlpipeline --bundle-name Bundle1 --text "When motion is detected, turn on the hallway light. When motion stops, turn it off."
+nlpipeline --bundle-name Front_Door_Light --text "If the front door opens, then turn on the hallway light."
 nlpipeline --bundle-name Bundle1 --text "When motion is detected, turn on the hallway light. When motion stops for 5 minutes, turn it off."
 nlpipeline --bundle-name Ex1_MotionLightBasic --text "When motion is detected, turn on the hallway light. When motion stops for 2 minutes, turn it off."
 nlpipeline --bundle-name Ex2_DoorAlarmImmediate --text "When the front door opens, turn on the alarm. When the front door closes, turn the alarm off."

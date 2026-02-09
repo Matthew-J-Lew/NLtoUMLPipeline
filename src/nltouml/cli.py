@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     New preferred interface:
       nlpipeline run --text "..."
       nlpipeline metrics --scenarios scenarios.csv
+      nlpipeline roundtrip --puml outputs/Bundle1/edited.puml
     """
 
     p = argparse.ArgumentParser(prog="nltouml", description="NL -> IR -> PlantUML state machine")
@@ -57,6 +58,40 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_p.add_argument("--metric2-max-repairs", type=int, default=0, help="Max repairs for Metric 2 runs")
     metrics_p.add_argument("--limit", type=int, default=None, help="Limit number of scenarios (debug)")
 
+    # ----- roundtrip -----
+    rt_p = sub.add_parser("roundtrip", help="Parse an edited PlantUML diagram back into IR + validation")
+    rt_p.add_argument(
+        "--puml",
+        required=True,
+        help=(
+            "Path to the edited PlantUML file (e.g., outputs/Bundle1/edited.puml). "
+            "By default, artifacts are written next to this file."
+        ),
+    )
+    rt_p.add_argument(
+        "--out-bundle",
+        default=None,
+        help=(
+            "Optional directory to write artifacts into (overrides default of puml's parent folder). "
+            "Example: outputs/Bundle1"
+        ),
+    )
+    rt_p.add_argument(
+        "--baseline-ir",
+        default=None,
+        help=(
+            "Optional path to a baseline IR (e.g., outputs/Bundle1/final.ir.json) to produce a simple diff."
+        ),
+    )
+    rt_p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+
     return p
 
 
@@ -69,7 +104,7 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
-    if argv[0] in {"run", "metrics"}:
+    if argv[0] in {"run", "metrics", "roundtrip"}:
         return argv
     # If user started with flags ("--text" etc.), treat as legacy `run`.
     if argv[0].startswith("-"):
@@ -107,6 +142,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote per-scenario CSV: {out_paths['per_scenario_csv']}")
         print(f"Wrote summary CSV:      {out_paths['summary_csv']}")
         print(f"Wrote run artifacts:    {out_paths['runs_dir']}")
+        return 0
+
+    if args.command == "roundtrip":
+        from .roundtrip import run_roundtrip
+
+        settings = load_settings(templates_dir=args.templates_dir)
+        try:
+            out_paths, summary = run_roundtrip(
+                puml_path=Path(args.puml),
+                out_bundle_dir=(Path(args.out_bundle) if args.out_bundle else None),
+                settings=settings,
+                baseline_ir_path=(Path(args.baseline_ir) if args.baseline_ir else None),
+            )
+        except PipelineError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        # Small compiler-style summary
+        if summary:
+            for line in summary:
+                print(line)
+
+        print(f"Wrote parsed IR (raw): {out_paths['raw_ir']}")
+        print(f"Wrote parsed IR:       {out_paths['ir']}")
+        print(f"Wrote report:          {out_paths['validation']}")
+        print(f"Wrote regenerated PUML:{out_paths['regenerated_puml']}")
+        if 'diff' in out_paths:
+            print(f"Wrote diff:            {out_paths['diff']}")
         return 0
 
     # args.command == "run"

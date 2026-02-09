@@ -103,7 +103,11 @@ def ir_to_plantuml(ir: Dict[str, Any], title: str = "Automation") -> str:
         [
             "' === Human-editable guide ===",
             "' You may edit this diagram and round-trip it back into IR:",
-            "'   nlpipeline roundtrip --puml outputs/<Bundle>/edited.puml",
+            "'   # 1) Copy baseline to an editable file (example):",
+            "'   #    cp outputs/<Bundle>/baseline/final.puml outputs/<Bundle>/edited.puml",
+            "'   # 2) Edit outputs/<Bundle>/edited.puml",
+            "'   # 3) Round-trip (outputs go to outputs/<Bundle>/edits/edit_###/*):",
+            "'   #    nlpipeline roundtrip --puml outputs/<Bundle>/edited.puml --out-bundle outputs/<Bundle>",
             "'",
             "' Supported label lines (one per line, joined with \\n in PlantUML):",
             "'   TRIGGER: <dev>.<attr> becomes \"value\" AND <dev>.<attr> changes AND after 30s AND schedule <cron>",

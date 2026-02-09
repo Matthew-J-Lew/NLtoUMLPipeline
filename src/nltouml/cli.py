@@ -65,14 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "Path to the edited PlantUML file (e.g., outputs/Bundle1/edited.puml). "
-            "By default, artifacts are written next to this file."
+            "Artifacts are written into a new outputs/<bundle>/edits/edit_### revision (next to baseline/current)."
         ),
     )
     rt_p.add_argument(
         "--out-bundle",
         default=None,
         help=(
-            "Optional directory to write artifacts into (overrides default of puml's parent folder). "
+            "Optional bundle root directory. If provided, the new edit revision will be created under: <bundle>/edits/edit_###. "
             "Example: outputs/Bundle1"
         ),
     )
@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--baseline-ir",
         default=None,
         help=(
-            "Optional path to a baseline IR (e.g., outputs/Bundle1/final.ir.json) to produce a simple diff."
+            "Optional path to a baseline IR (e.g., outputs/Bundle1/baseline/final.ir.json) to produce a simple diff."
         ),
     )
     rt_p.add_argument(
@@ -164,12 +164,15 @@ def main(argv: list[str] | None = None) -> int:
             for line in summary:
                 print(line)
 
+        print(f"Wrote revision dir:    {out_paths['revision_dir']}")
+        print(f"Wrote source PUML:     {out_paths['source_puml']}")
         print(f"Wrote parsed IR (raw): {out_paths['raw_ir']}")
         print(f"Wrote parsed IR:       {out_paths['ir']}")
         print(f"Wrote report:          {out_paths['validation']}")
-        print(f"Wrote regenerated PUML:{out_paths['regenerated_puml']}")
+        print(f"Wrote regenerated PUML:{out_paths['puml']}")
         if 'diff' in out_paths:
             print(f"Wrote diff:            {out_paths['diff']}")
+        print(f"Updated current dir:   {Path(out_paths['bundle_root']) / 'current'}")
         return 0
 
     # args.command == "run"
@@ -187,9 +190,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
 
-    print(f"Wrote IR:      {out_paths['ir']}")
-    print(f"Wrote PUML:    {out_paths['puml']}")
-    print(f"Wrote report:  {out_paths['validation']}")
+    print(f"Wrote baseline dir: {out_paths['baseline_dir']}")
+    print(f"Wrote current dir:  {out_paths['current_dir']}")
+    print(f"Wrote IR:           {out_paths['ir']}")
+    print(f"Wrote PUML:         {out_paths['puml']}")
+    print(f"Wrote report:       {out_paths['validation']}")
     return 0
 
 

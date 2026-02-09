@@ -23,9 +23,11 @@ nlpipeline --bundle-name Bundle1 \
 ```
 
 Outputs:
-- `outputs/Bundle1/final.ir.json`
-- `outputs/Bundle1/final.puml`
-- `outputs/Bundle1/validation_report.json`
+- `outputs/Bundle1/baseline/final.ir.json`
+- `outputs/Bundle1/baseline/final.puml`
+- `outputs/Bundle1/baseline/validation_report.json`
+- `outputs/Bundle1/current/` (copies of the latest canonical `final.*` + report)
+- `outputs/Bundle1/manifest.json`
 
 ---
 
@@ -48,22 +50,32 @@ Run:
 
 ```bash
 nlpipeline --bundle-name Front_Door_Light --text "If the front door opens, then turn on the hallway light."
-nlpipeline --bundle-name Bundle1 --text "When motion is detected, turn on the hallway light. When motion stops for 5 minutes, turn it off."
-nlpipeline --bundle-name Ex1_MotionLightBasic --text "When motion is detected, turn on the hallway light. When motion stops for 2 minutes, turn it off."
-nlpipeline --bundle-name Ex2_DoorAlarmImmediate --text "When the front door opens, turn on the alarm. When the front door closes, turn the alarm off."
-nlpipeline --bundle-name Ex3_PresenceLock --text "When I am not present, lock the front door. When I become present, unlock the front door."
-nlpipeline --bundle-name Ex4_DoorAlarmDelayed --text "When the front door opens, wait 30 seconds. If the front door is still open, turn on the alarm. When the front door closes, turn the alarm off."
-nlpipeline --bundle-name Ex5_MotionPresenceLighting --text "When I become not present, lock the front door and turn off the hallway light. When I become present, unlock the front door."
-nlpipeline --bundle-name Ex10_TimedLightBurst --text 'When motion is detected, turn on the hallway light for 30 seconds, then turn it off.' --max-repairs 2
-nlpipeline --bundle-name Ex11_DoorWaitThenAlarm --text 'When the front door opens, wait 30 seconds, then turn on the alarm. When the front door closes, turn the alarm off.' --max-repairs 2
-
-
 
 ```
 
 If the first model output fails validation, the pipeline will automatically attempt a short **repair loop**.
 
 ---
+
+## Human-in-the-loop editing (Layer 3 round-trip)
+
+After `nlpipeline run`, edit the generated diagram and round-trip it back into IR:
+
+```bash
+cp outputs/Bundle1/baseline/final.puml outputs/Bundle1/edited.puml
+# edit outputs/Bundle1/edited.puml
+nlpipeline roundtrip --puml outputs/Bundle1/edited.puml --out-bundle outputs/Bundle1
+```
+
+Round-trip artifacts are written to a new revision folder:
+
+- `outputs/Bundle1/edits/edit_###/` (contains `source.puml`, `raw.ir.json`, `final.ir.json`, `validation_report.json`, `final.puml`, and optional `diff.json`)
+
+The convenience pointer is also updated:
+
+- `outputs/Bundle1/current/`
+
+For full details, see `LAYER3_ROUNDTRIP.md`.
 
 ## Rendering the PlantUML
 
@@ -82,3 +94,23 @@ The output is PlantUML text (`.puml`). To render to PNG/SVG you can:
 - `templates/capability_catalog.json`
 
 The device and capability catalogs will be expanded later for more scenarios.
+
+## How to run:
+1. Activate virtual environment
+```bash
+.\.venv\Scripts\Activate.ps1
+```
+2. Run the pipeline on a scenario
+```bash
+nlpipeline run --bundle-name L1234_Test --text "When motion is detected, turn on the hallway light. When motion stops for 5 minutes, turn it off."
+```
+3. Copy the baseline UML to an editing area
+```bash
+Copy-Item outputs/L1234_Test/baseline/final.puml outputs/L1234_Test/edited.puml
+```
+Now you can edit the .puml
+4. Roundtrip the edited .puml back into layer 4
+```bash
+nlpipeline roundtrip --puml outputs/L1234_Test/edited.puml --baseline-ir outputs/L1234_Test/baseline/final.ir.json
+```
+Now the results are the finished version of layer 4

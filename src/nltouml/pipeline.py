@@ -8,11 +8,12 @@ from typing import Any, Dict
 
 from .config import Settings
 from .io_utils import read_json, write_json, write_text
+from .layout import build_revision_record, ensure_bundle_dirs, update_current, write_manifest
 from .llm import generate_ir_with_llm, mock_generate_ir, repair_ir_with_llm
 from .normalize import coerce_ir_shape, normalize_ir
 from .transform import desugar_delays_to_timer_states
 from .plantuml import ir_to_plantuml
-from .validate import Diagnostic, validate_all
+from .validate import validate_all
 
 
 class PipelineError(RuntimeError):
@@ -64,8 +65,13 @@ def run_pipeline(
 ) -> Dict[str, Path]:
     """Run NL->IR->validate->(repair)->PlantUML.
 
-    Returns paths to written artifacts.
+    Output layout (recommended, and now the default):
+      outputs/<bundle>/baseline/*   - initial NL->IR->PUML artifacts
+      outputs/<bundle>/current/*    - convenience pointer to latest canonical artifacts
+
+    Returns paths to the *baseline* artifacts.
     """
+
     ir_schema, device_catalog, capability_catalog = load_templates(settings.templates_dir)
 
     # 1) NL -> IR
@@ -83,15 +89,21 @@ def run_pipeline(
             ir_schema=ir_schema,
         )
 
-    # Prepare output paths early so we can write debug artifacts.
-    out_bundle = out_dir / bundle_name
+    # Output bundle layout
+    bundle_root = out_dir / bundle_name
+    layout = ensure_bundle_dirs(bundle_root)
+    baseline_dir = layout.baseline_dir
+
     out_paths = {
-        "ir": out_bundle / "final.ir.json",
-        "puml": out_bundle / "final.puml",
-        "validation": out_bundle / "validation_report.json",
+        "ir": baseline_dir / "final.ir.json",
+        "puml": baseline_dir / "final.puml",
+        "validation": baseline_dir / "validation_report.json",
         # Debug artifacts (helpful when the LLM produces near-miss JSON).
-        "raw_ir": out_bundle / "raw.ir.json",
-        "coerced_ir": out_bundle / "coerced.ir.json",
+        "raw_ir": baseline_dir / "raw.ir.json",
+        "coerced_ir": baseline_dir / "coerced.ir.json",
+        "bundle_root": bundle_root,
+        "baseline_dir": baseline_dir,
+        "current_dir": layout.current_dir,
     }
 
     # Write raw IR (pre-coercion) for debugging.
@@ -109,7 +121,6 @@ def run_pipeline(
     repairs = 0
     while (not use_mock) and repairs < max_repairs and any(d.severity == "error" for d in diags):
         repairs += 1
-        # convert diags to plain dict for the model
         diag_payload = [asdict(d) for d in diags]
         ir = repair_ir_with_llm(
             ir,
@@ -129,7 +140,7 @@ def run_pipeline(
     title = f"{bundle_name}"
     puml = ir_to_plantuml(ir, title=title)
 
-    # 5) Write outputs
+    # 5) Write baseline outputs
     write_json(out_paths["ir"], ir)
 
     report = {
@@ -140,4 +151,22 @@ def run_pipeline(
     write_json(out_paths["validation"], report)
     write_text(out_paths["puml"], puml)
 
+    # 6) Update current pointer + manifest
+    update_current(bundle_root, baseline_dir)
+    write_manifest(
+        bundle_root,
+        {
+            "baseline": {"dir": "baseline", "updated_at": datetime_utc_iso()},
+            "current": {"points_to": "baseline"},
+            "append_revision": build_revision_record(kind="baseline", revision_dir=baseline_dir),
+        },
+    )
+
     return out_paths
+
+
+def datetime_utc_iso() -> str:
+    """UTC timestamp for manifest metadata (kept here to avoid extra imports in hot paths)."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()

@@ -1,88 +1,98 @@
 # Layer 3: Human-in-the-loop PlantUML editing (round-trip)
 
-This repo now supports a human-in-the-loop workflow where you can edit the generated PlantUML state machine and deterministically convert those edits back into canonical IR.
+This repo supports a human-in-the-loop workflow where you can edit the generated PlantUML state machine and deterministically convert those edits back into canonical IR.
 
-## What this adds
+## Output layout
 
-### 1) A new CLI command: `roundtrip`
+Every bundle now uses a revisioned folder structure:
 
-Parses an edited `.puml` file back into IR, re-runs deterministic normalization + delay desugaring, validates against schema + catalogs, and regenerates a canonical `.puml` so you can diff what the system understood.
+- `outputs/<Bundle>/baseline/`            baseline NL→IR→PUML artifacts (from `nlpipeline run`)
+- `outputs/<Bundle>/edits/edit_001/`      each human edit / round-trip revision (edit_002, edit_003, ...)
+- `outputs/<Bundle>/current/`             convenience pointer (copied) to the latest canonical artifacts
+- `outputs/<Bundle>/manifest.json`        lightweight revision log + current pointer metadata
 
-### 2) A parseable PlantUML format (by design)
+Within each revision folder (`baseline` or `edits/edit_###`) you will see:
 
-The PlantUML generator now emits:
+- `final.ir.json`
+- `final.puml`
+- `validation_report.json`
 
-- A comment "cheat sheet" at the top describing the label grammar
-- Explicit state declarations so you can rename display labels safely:
+Additional debug/provenance artifacts:
 
-  `state "Hallway Light On" as LightOn`
-
-The alias (`LightOn`) is treated as the stable state ID. You can change the quoted display label without breaking round-trip parsing.
-
-### 3) Deterministic diagnostics with line numbers
-
-If the parser hits unsupported syntax or malformed labels, it emits diagnostics with a `puml:L<line>` location and an error code.
+- `raw.ir.json` (baseline debug and roundtrip parse output)
+- `coerced.ir.json` (baseline only)
+- `source.puml` (edits only; the exact edited input you supplied)
 
 ## Recommended user flow
 
-1) Run the pipeline as usual:
+1) Run the pipeline:
 
 ```bash
 nlpipeline run --text "When motion is detected, turn on the hallway light. When motion stops, turn it off." --bundle-name Bundle1
 ```
 
-This writes:
+Writes baseline artifacts to:
 
-- `outputs/Bundle1/final.ir.json`
-- `outputs/Bundle1/final.puml`
-- `outputs/Bundle1/validation_report.json`
+- `outputs/Bundle1/baseline/final.ir.json`
+- `outputs/Bundle1/baseline/final.puml`
+- `outputs/Bundle1/baseline/validation_report.json`
 
-2) Copy and edit the diagram:
+and updates the convenience pointer:
 
-```bash
-cp outputs/Bundle1/final.puml outputs/Bundle1/edited.puml
-```
+- `outputs/Bundle1/current/*`
 
-Open `outputs/Bundle1/edited.puml` in VSCode (with PlantUML preview) and edit states/transitions/triggers/actions.
-
-3) Round-trip the edited diagram back into IR:
+2) Copy the baseline diagram to an editable file and edit it:
 
 ```bash
-nlpipeline roundtrip --puml outputs/Bundle1/edited.puml --baseline-ir outputs/Bundle1/final.ir.json
+cp outputs/Bundle1/baseline/final.puml outputs/Bundle1/edited.puml
 ```
+
+Edit `outputs/Bundle1/edited.puml` in VSCode (PlantUML preview recommended).
+
+3) Round-trip your edited diagram back into IR:
+
+```bash
+nlpipeline roundtrip --puml outputs/Bundle1/edited.puml --out-bundle outputs/Bundle1
+```
+
+This creates a new edit revision folder:
+
+- `outputs/Bundle1/edits/edit_###/`
+
+and writes:
+
+- `source.puml`                 copy of your edited input
+- `raw.ir.json`                 direct parse output (best-effort)
+- `final.ir.json`               canonical IR after normalize + transforms
+- `validation_report.json`      parser + schema + catalog diagnostics
+- `final.puml`                  regenerated canonical diagram
+- `diff.json`                   if a baseline/current IR was found or you passed `--baseline-ir`
+
+It also updates:
+
+- `outputs/Bundle1/current/*`
 
 ## Inputs and outputs
 
 ### Inputs
 
 - Required: `--puml <path>`
-  - The edited PlantUML file to parse.
-
-- Optional: `--baseline-ir <path>`
-  - A baseline IR to generate a small semantic diff against.
+  - Path to the edited PlantUML file to parse.
 
 - Optional: `--out-bundle <dir>`
-  - Where to write the round-trip artifacts (defaults to the `.puml` file's parent folder).
+  - Bundle root to write the new edit revision under.
+  - If omitted, the tool tries to infer the bundle root by walking up from `--puml` and looking for
+    `manifest.json` or `baseline/edits/current`. If nothing matches, it treats the `.puml` parent as the bundle root.
 
-### Outputs (written next to the edited `.puml` by default)
+- Optional: `--baseline-ir <path>`
+  - IR to diff against.
+  - If omitted, defaults to `outputs/<Bundle>/current/final.ir.json` if available, otherwise `baseline/final.ir.json`.
 
-- `edited.raw.ir.json`
-  - The direct result of parsing (best-effort).
+### Outputs
 
-- `edited.ir.json`
-  - Parsed IR after deterministic normalization and delay desugaring.
-
-- `edited.validation_report.json`
-  - Combined report containing:
-    - Parser diagnostics (line-numbered)
-    - Schema validation errors
-    - Catalog/type validation errors
-
-- `edited.regenerated.puml`
-  - Canonical PlantUML regenerated from `edited.ir.json`.
-
-- `edited.diff.json` (only if `--baseline-ir` is provided)
-  - Lightweight diff of initial state, added/removed states, and added/removed transitions.
+- A new edit revision folder under `outputs/<Bundle>/edits/edit_###/`
+- `outputs/<Bundle>/current/*` updated to point at the latest canonical artifacts
+- `outputs/<Bundle>/manifest.json` updated with a new revision entry
 
 ## Supported label grammar
 
@@ -112,5 +122,5 @@ If the edited IR contains `delay Ns` actions in the middle of a transition actio
 If you are running from the repo without installing it, prefix commands with `PYTHONPATH=src`, e.g.:
 
 ```bash
-PYTHONPATH=src python -m nltouml.cli roundtrip --puml outputs/Bundle1/edited.puml
+PYTHONPATH=src python -m nltouml.cli roundtrip --puml outputs/Bundle1/edited.puml --out-bundle outputs/Bundle1
 ```

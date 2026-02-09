@@ -8,6 +8,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Settings
 from .io_utils import read_json, write_json, write_text
+from .layout import (
+    allocate_edit_dir,
+    find_bundle_root,
+    safe_copy,
+    update_current,
+    write_manifest,
+    build_revision_record,
+)
 from .normalize import normalize_ir
 from .pipeline import PipelineError, load_templates
 from .plantuml import ir_to_plantuml
@@ -628,6 +636,7 @@ def _simple_ir_diff(baseline: Dict[str, Any], edited: Dict[str, Any]) -> Dict[st
     }
 
 
+
 def run_roundtrip(
     *,
     puml_path: Path,
@@ -635,7 +644,14 @@ def run_roundtrip(
     settings: Settings,
     baseline_ir_path: Optional[Path] = None,
 ) -> Tuple[Dict[str, Path], List[str]]:
-    """Parse edited PlantUML -> IR -> validate -> regenerate PlantUML.
+    """Parse an edited PlantUML -> IR -> validate -> regenerate PlantUML.
+
+    Output layout (preferred):
+      outputs/<bundle>/edits/edit_###/*   - revision created from this round-trip
+      outputs/<bundle>/current/*          - convenience pointer to the latest canonical artifacts
+
+    The input .puml can live anywhere. If it lives under a recognized bundle, we will
+    place outputs under that bundle. Otherwise, we treat puml_path.parent as the bundle root.
 
     Returns:
       (out_paths, summary_lines)
@@ -645,15 +661,25 @@ def run_roundtrip(
 
     ir_schema, device_catalog, capability_catalog = load_templates(settings.templates_dir)
 
-    out_bundle = out_bundle_dir if out_bundle_dir is not None else puml_path.parent
+    # Determine bundle root + allocate new edit revision dir
+    bundle_root = find_bundle_root(puml_path, out_bundle_override=out_bundle_dir)
+    edit_dir = allocate_edit_dir(bundle_root)
+
+    # Copy the user's edited source into the revision folder for provenance.
+    source_puml = edit_dir / "source.puml"
+    safe_copy(puml_path, source_puml)
+
     out_paths: Dict[str, Path] = {
-        "raw_ir": out_bundle / "edited.raw.ir.json",
-        "ir": out_bundle / "edited.ir.json",
-        "validation": out_bundle / "edited.validation_report.json",
-        "regenerated_puml": out_bundle / "edited.regenerated.puml",
+        "source_puml": source_puml,
+        "raw_ir": edit_dir / "raw.ir.json",
+        "ir": edit_dir / "final.ir.json",
+        "validation": edit_dir / "validation_report.json",
+        "puml": edit_dir / "final.puml",
+        "revision_dir": edit_dir,
+        "bundle_root": bundle_root,
     }
 
-    txt = puml_path.read_text(encoding="utf-8")
+    txt = source_puml.read_text(encoding="utf-8")
     ir_raw, parse_diags = parse_plantuml(txt)
 
     # Fill device kinds from catalog where possible.
@@ -688,17 +714,45 @@ def run_roundtrip(
     write_json(out_paths["ir"], ir)
     write_json(out_paths["validation"], report)
 
-    # Regenerate PlantUML from parsed IR (trust anchor)
-    title = out_bundle.name or "Edited"
+    # Regenerate PlantUML from canonical IR (trust anchor)
+    title = bundle_root.name or "Automation"
     regenerated = ir_to_plantuml(ir, title=title)
-    write_text(out_paths["regenerated_puml"], regenerated)
+    write_text(out_paths["puml"], regenerated)
 
     # Optional diff
+    diff_against: Optional[Path] = None
     if baseline_ir_path and baseline_ir_path.exists():
-        baseline = read_json(baseline_ir_path)
+        diff_against = baseline_ir_path
+    else:
+        # Default: diff against the current pointer if present, otherwise baseline.
+        cand_current = bundle_root / "current" / "final.ir.json"
+        cand_baseline = bundle_root / "baseline" / "final.ir.json"
+        if cand_current.exists():
+            diff_against = cand_current
+        elif cand_baseline.exists():
+            diff_against = cand_baseline
+
+    if diff_against is not None and diff_against.exists():
+        baseline = read_json(diff_against)
         diff = _simple_ir_diff(baseline, ir)
-        out_paths["diff"] = out_bundle / "edited.diff.json"
+        out_paths["diff"] = edit_dir / "diff.json"
         write_json(out_paths["diff"], diff)
+
+    # Update current pointer + manifest
+    update_current(bundle_root, edit_dir)
+    rel = str(edit_dir.relative_to(bundle_root).as_posix()) if edit_dir.is_relative_to(bundle_root) else str(edit_dir)
+    write_manifest(
+        bundle_root,
+        {
+            "current": {"points_to": rel},
+            "append_revision": build_revision_record(
+                kind="edit",
+                revision_dir=edit_dir,
+                source_puml=source_puml,
+                diff_against=diff_against,
+            ),
+        },
+    )
 
     # CLI summary (first few errors)
     summary: List[str] = []

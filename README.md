@@ -81,4 +81,4 @@ The output is PlantUML text (`.puml`). To render to PNG/SVG you can:
 - `templates/device_catalog.json`
 - `templates/capability_catalog.json`
 
-You can edit the device catalog to match your real home/devices later.
+The device and capability catalogs will be expanded later for more scenarios.

@@ -232,3 +232,166 @@ def mock_generate_ir(text: str) -> Dict[str, Any]:
             ]
         }
     }
+
+def _build_edit_patch_system_prompt(
+    device_catalog: Dict[str, Any],
+    capability_catalog: Dict[str, Any],
+    ir_schema: Dict[str, Any],
+    current_ir: Dict[str, Any],
+) -> str:
+    allowed_devices = [d["id"] for d in device_catalog.get("devices", []) if isinstance(d, dict) and "id" in d]
+    globals_ = [g["id"] for g in device_catalog.get("globals", []) if isinstance(g, dict) and "id" in g]
+    all_ids = sorted(set(allowed_devices + globals_))
+
+    sm = current_ir.get("stateMachine", {}) if isinstance(current_ir.get("stateMachine"), dict) else {}
+    states = [s.get("id") for s in sm.get("states", []) if isinstance(s, dict) and isinstance(s.get("id"), str)]
+    transitions = []
+    for t in sm.get("transitions", []) if isinstance(sm.get("transitions"), list) else []:
+        if isinstance(t, dict):
+            transitions.append({"from": t.get("from"), "to": t.get("to")})
+
+    kind_specs = capability_catalog.get("kinds", {}) if isinstance(capability_catalog.get("kinds"), dict) else {}
+    compact_kinds: Dict[str, Dict[str, List[str]]] = {}
+    for k, spec in kind_specs.items():
+        if not isinstance(spec, dict):
+            continue
+        attrs = list((spec.get("attributes") or {}).keys()) if isinstance(spec.get("attributes"), dict) else []
+        cmds = list((spec.get("commands") or {}).keys()) if isinstance(spec.get("commands"), dict) else []
+        compact_kinds[str(k)] = {"attributes": sorted(attrs), "commands": sorted(cmds)}
+
+    return (
+        "You are an edit agent for a smart-home state-machine IR.\n"
+        "You will receive:\n"
+        "  - CURRENT_IR (JSON)\n"
+        "  - CHANGE_REQUEST (natural language)\n\n"
+        "You must return ONLY a JSON object with this shape:\n"
+        "{\n"
+        "  \"summary\": \"one or two sentences describing what you changed\",\n"
+        "  \"edits\": [\n"
+        "     {\"op\":\"set_state_label\", \"state_id\":\"Idle\", \"label\":\"LightOff\"},\n"
+        "     {\"op\":\"update_transition\", \"from\":\"WaitOff\", \"to\":\"Idle\", \"triggers\":[...], \"actions\":[...]},\n"
+        "     ...\n"
+        "  ]\n"
+        "}\n\n"
+        "Allowed ops (ONLY these):\n"
+        "- set_state_label(state_id,label)\n"
+        "- set_initial(state_id)\n"
+        "- add_state(state_id,label?)\n"
+        "- remove_state(state_id)\n"
+        "- add_transition(from,to,triggers?,guard?,actions?)\n"
+        "- remove_transition(from,to,index?)\n"
+        "- update_transition(from,to,index?,new_from?,new_to?,triggers?,guard?,actions?)\n\n"
+        "CRITICAL constraints:\n"
+        "- Do NOT rename existing state IDs unless the user explicitly requests it.\n"
+        "- Prefer changing human-readable naming via set_state_label.\n"
+        "- If you include \"index\", it refers to the Nth transition (0-based) among transitions matching the same from/to pair.\n"
+        "- Any triggers/actions you include MUST be valid IR objects per schema (types: becomes|changes|schedule|after, and command|delay|notify).\n"
+        "- You may ONLY reference these device ids: "
+        + str(all_ids)
+        + "\n\n"
+        "Current state IDs:\n"
+        + str(states)
+        + "\n"
+        "Current transition endpoints:\n"
+        + str(transitions)
+        + "\n\n"
+        "Device kinds and their attributes/commands (for checking):\n"
+        + str(compact_kinds)
+        + "\n"
+    )
+
+
+def generate_edit_patch_with_llm(
+    *,
+    request_text: str,
+    current_ir: Dict[str, Any],
+    api_key: str,
+    model: str,
+    device_catalog: Dict[str, Any],
+    capability_catalog: Dict[str, Any],
+    ir_schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    sys_prompt = _build_edit_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
+    user_prompt = (
+        "CHANGE_REQUEST:\n"
+        f"{request_text}\n\n"
+        "CURRENT_IR:\n"
+        f"{current_ir}\n"
+    )
+    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
+    return try_extract_json(res.text)
+
+
+def repair_edit_patch_with_llm(
+    *,
+    request_text: str,
+    current_ir: Dict[str, Any],
+    prior_patch: Dict[str, Any],
+    diagnostics: List[Dict[str, Any]],
+    api_key: str,
+    model: str,
+    device_catalog: Dict[str, Any],
+    capability_catalog: Dict[str, Any],
+    ir_schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    sys_prompt = _build_edit_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
+    user_prompt = (
+        "The prior patch produced validation errors after being applied.\n"
+        "Return a corrected patch JSON using ONLY allowed ops.\n\n"
+        f"CHANGE_REQUEST:\n{request_text}\n\n"
+        f"CURRENT_IR:\n{current_ir}\n\n"
+        f"PRIOR_PATCH:\n{prior_patch}\n\n"
+        f"DIAGNOSTICS:\n{diagnostics}\n"
+    )
+    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
+    return try_extract_json(res.text)
+
+
+def mock_generate_edit_patch(request_text: str, current_ir: Dict[str, Any]) -> Dict[str, Any]:
+    """Very small deterministic patch generator for demo/testing without an LLM."""
+    t = request_text.lower()
+    edits: List[Dict[str, Any]] = []
+
+    # common demo edits
+    if "lightoff" in t:
+        edits.append({"op": "set_state_label", "state_id": "Idle", "label": "LightOff"})
+
+    # timer: "2 minutes" or "120s"
+    import re
+    m = re.search(r"(\d+)\s*(minute|minutes)", t)
+    if m:
+        secs = int(m.group(1)) * 60
+        edits.append({
+            "op": "update_transition",
+            "from": "WaitOff",
+            "to": "Idle",
+            "triggers": [{"type": "after", "seconds": secs}],
+        })
+    m2 = re.search(r"(\d+)\s*(second|seconds|s)\b", t)
+    if m2:
+        secs = int(m2.group(1))
+        edits.append({
+            "op": "update_transition",
+            "from": "WaitOff",
+            "to": "Idle",
+            "triggers": [{"type": "after", "seconds": secs}],
+        })
+
+    if "notify" in t:
+        edits.append({
+            "op": "update_transition",
+            "from": "Idle",
+            "to": "LightOn",
+            "actions": [
+                {"type": "command", "ref": {"device": "light_hall"}, "command": "on", "args": []},
+                {"type": "notify", "message": "Motion detected"},
+            ],
+        })
+
+    if not edits:
+        edits.append({"op": "set_state_label", "state_id": "Idle", "label": "Idle"})  # no-op
+
+    return {
+        "summary": "Applied requested changes (mock).",
+        "edits": edits,
+    }

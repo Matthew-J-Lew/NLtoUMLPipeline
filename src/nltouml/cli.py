@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
       nlpipeline run --text "..."
       nlpipeline metrics --scenarios scenarios.csv
       nlpipeline roundtrip --puml outputs/Bundle1/edited.puml
+      nlpipeline agent-edit --bundle-name Bundle1 --request "..."
     """
 
     p = argparse.ArgumentParser(prog="nltouml", description="NL -> IR -> PlantUML state machine")
@@ -92,6 +93,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ----- agent-edit -----
+    ae_p = sub.add_parser("agent-edit", help="Use an edit agent to apply NL change requests to the CURRENT IR")
+    ae_p.add_argument("--bundle-name", required=True, help="Existing bundle name under --out-dir (must have baseline/current)")
+    ae_p.add_argument("--out-dir", default="outputs", help="Outputs directory containing the bundle")
+    ae_p.add_argument("--request", required=True, help="Natural language change request (what to change)")
+    ae_p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+    ae_p.add_argument("--mock", action="store_true", help="Run without LLM (simple heuristic patch generator)")
+    ae_p.add_argument("--max-repairs", type=int, default=1, help="Max agent patch repair attempts if validation fails")
+
     return p
 
 
@@ -104,7 +121,7 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
-    if argv[0] in {"run", "metrics", "roundtrip"}:
+    if argv[0] in {"run", "metrics", "roundtrip", "agent-edit"}:
         return argv
     # If user started with flags ("--text" etc.), treat as legacy `run`.
     if argv[0].startswith("-"):
@@ -173,6 +190,33 @@ def main(argv: list[str] | None = None) -> int:
         if 'diff' in out_paths:
             print(f"Wrote diff:            {out_paths['diff']}")
         print(f"Updated current dir:   {Path(out_paths['bundle_root']) / 'current'}")
+        return 0
+
+    if args.command == "agent-edit":
+        from .agent_edit import run_agent_edit
+
+        settings = load_settings(templates_dir=args.templates_dir)
+        try:
+            out_paths, summary = run_agent_edit(
+                bundle_name=args.bundle_name,
+                out_dir=Path(args.out_dir),
+                request_text=args.request,
+                settings=settings,
+                use_mock=bool(args.mock),
+                max_repairs=int(args.max_repairs),
+            )
+        except PipelineError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        for line in summary:
+            print(line)
+
+        print(f"Wrote revision dir:    {out_paths['revision_dir']}")
+        if "puml" in out_paths:
+            print(f"Wrote diagram:         {out_paths['puml']}")
+        if "validation" in out_paths:
+            print(f"Wrote report:          {out_paths['validation']}")
         return 0
 
     # args.command == "run"

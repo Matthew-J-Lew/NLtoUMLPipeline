@@ -207,6 +207,62 @@ Expected:
 
 ---
 
+## 5) Agentic refine loop (Layers 5–7)
+
+This workflow runs a **validate → repair → re-validate** loop on the **current** canonical IR.
+It is meant to catch and fix higher-level issues (e.g., unreachable states / ambiguous transitions) after:
+- baseline generation (Layers 1–4),
+- an agent edit (`agent-edit`), or
+- a manual roundtrip edit (`roundtrip`).
+
+### Step A — Run refine (real run)
+```bash
+nlpipeline refine --bundle-name FullPipelineTest --max-iters 5
+```
+
+### Step B — Run refine (mock)
+Mock mode does not require an API key (it applies simple deterministic repairs):
+```bash
+nlpipeline refine --bundle-name FullPipelineTest --max-iters 5 --mock
+```
+
+### Step C — Verify outputs
+
+A new folder appears:
+
+```
+outputs/FullPipelineTest/edits/edit_00X/
+  source.parent_ir.json
+  source.validation_report.json
+  source.l5.validation_agent.json
+  iterations/
+    iter_001/
+      input.ir.json
+      validation_report.json
+      l5.validation_agent.json
+      l6.repair_agent.patch.json
+      raw.ir.json
+      final.ir.json
+      validation_report.after.json
+      l5.validation_agent.after.json
+      final.puml
+    ...
+  final.ir.json
+  final.puml
+  validation_report.json
+  l5.validation_agent.json
+  diff.json
+  summary.md
+```
+
+**Check:**
+- `validation_report.json` is OK (Layer 4 deterministic gate)
+- `l5.validation_agent.json` is OK (Layer 5 agentic checks)
+- `summary.md` shows iterations + stop reason
+- `current/` updates only if both reports are OK
+
+---
+
 ## Notes on the “good path”
 
 - The baseline run (`nlpipeline run`) remains the default “good path.”

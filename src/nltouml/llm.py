@@ -395,3 +395,177 @@ def mock_generate_edit_patch(request_text: str, current_ir: Dict[str, Any]) -> D
         "summary": "Applied requested changes (mock).",
         "edits": edits,
     }
+
+
+def _build_repair_patch_system_prompt(
+    device_catalog: Dict[str, Any],
+    capability_catalog: Dict[str, Any],
+    ir_schema: Dict[str, Any],
+    current_ir: Dict[str, Any],
+) -> str:
+    """System prompt for Layer 6 repair agent (patch-based repairs)."""
+    allowed_devices = [d["id"] for d in device_catalog.get("devices", []) if isinstance(d, dict) and "id" in d]
+    globals_ = [g["id"] for g in device_catalog.get("globals", []) if isinstance(g, dict) and "id" in g]
+    all_ids = sorted(set(allowed_devices + globals_))
+
+    sm = current_ir.get("stateMachine", {}) if isinstance(current_ir.get("stateMachine"), dict) else {}
+    states = [s.get("id") for s in sm.get("states", []) if isinstance(s, dict) and isinstance(s.get("id"), str)]
+    transitions = []
+    for t in sm.get("transitions", []) if isinstance(sm.get("transitions"), list) else []:
+        if isinstance(t, dict):
+            transitions.append({"from": t.get("from"), "to": t.get("to")})
+
+    kind_specs = capability_catalog.get("kinds", {}) if isinstance(capability_catalog.get("kinds"), dict) else {}
+    compact_kinds: Dict[str, Dict[str, List[str]]] = {}
+    for k, spec in kind_specs.items():
+        if not isinstance(spec, dict):
+            continue
+        attrs = list((spec.get("attributes") or {}).keys()) if isinstance(spec.get("attributes"), dict) else []
+        cmds = list((spec.get("commands") or {}).keys()) if isinstance(spec.get("commands"), dict) else []
+        compact_kinds[str(k)] = {"attributes": sorted(attrs), "commands": sorted(cmds)}
+
+    return (
+        "You are a REPAIR agent for a smart-home state-machine IR.\n"
+        "Goal: produce a MINIMAL patch that fixes the reported errors.\n"
+        "Output ONLY a JSON object (no markdown) with this exact shape:\n"
+        "{\n"
+        "  \"summary\": \"one or two sentences describing the fix\",\n"
+        "  \"edits\": [ {\"op\":\"...\", ...}, ... ]\n"
+        "}\n\n"
+        "Allowed ops (ONLY these):\n"
+        "- set_state_label(state_id,label)\n"
+        "- set_initial(state_id)\n"
+        "- add_state(state_id,label?)\n"
+        "- remove_state(state_id)\n"
+        "- add_transition(from,to,triggers?,guard?,actions?)\n"
+        "- remove_transition(from,to,index?)\n"
+        "- update_transition(from,to,index?,new_from?,new_to?,triggers?,guard?,actions?)\n\n"
+        "Constraints:\n"
+        "- Prefer the smallest change that resolves the error(s).\n"
+        "- Do NOT invent new device ids; you may ONLY reference: " + str(all_ids) + "\n"
+        "- Avoid renaming state IDs; prefer set_state_label.\n"
+        "- If you include \"index\", it refers to the Nth transition (0-based) among transitions matching the same from/to pair.\n"
+        "- Any triggers/actions you include MUST be valid IR objects per schema (types: becomes|changes|schedule|after, and command|delay|notify).\n\n"
+        "Current state IDs:\n" + str(states) + "\n"
+        "Current transition endpoints:\n" + str(transitions) + "\n\n"
+        "Device kinds and their attributes/commands (for checking):\n" + str(compact_kinds) + "\n"
+    )
+
+
+def generate_repair_patch_with_llm(
+    *,
+    current_ir: Dict[str, Any],
+    agentic_issues: List[Dict[str, Any]],
+    deterministic_diagnostics: List[Dict[str, Any]],
+    api_key: str,
+    model: str,
+    device_catalog: Dict[str, Any],
+    capability_catalog: Dict[str, Any],
+    ir_schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    sys_prompt = _build_repair_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
+    user_prompt = (
+        "Fix the IR by returning a patch.\n"
+        "Prioritize ERRORs over WARNINGs.\n\n"
+        f"AGENTIC_ISSUES: {agentic_issues}\n\n"
+        f"DETERMINISTIC_DIAGNOSTICS: {deterministic_diagnostics}\n\n"
+        f"CURRENT_IR: {current_ir}\n"
+    )
+    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
+    return try_extract_json(res.text)
+
+
+def repair_repair_patch_with_llm(
+    *,
+    current_ir: Dict[str, Any],
+    agentic_issues: List[Dict[str, Any]],
+    deterministic_diagnostics: List[Dict[str, Any]],
+    prior_patch: Dict[str, Any],
+    patch_error: str,
+    api_key: str,
+    model: str,
+    device_catalog: Dict[str, Any],
+    capability_catalog: Dict[str, Any],
+    ir_schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    sys_prompt = _build_repair_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
+    user_prompt = (
+        "The prior patch failed to apply or produced invalid IR. Return a corrected patch JSON using ONLY allowed ops.\n\n"
+        f"AGENTIC_ISSUES: {agentic_issues}\n\n"
+        f"DETERMINISTIC_DIAGNOSTICS: {deterministic_diagnostics}\n\n"
+        f"CURRENT_IR: {current_ir}\n\n"
+        f"PRIOR_PATCH: {prior_patch}\n\n"
+        f"PATCH_ERROR: {patch_error}\n"
+    )
+    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
+    return try_extract_json(res.text)
+
+
+def mock_generate_repair_patch(
+    *,
+    current_ir: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Deterministic fallback patch for demo/testing (Layer 6).
+
+    Heuristics:
+      - remove unreachable states (except initial)
+      - remove duplicate/ambiguous transitions (keep first)
+    """
+    sm = current_ir.get("stateMachine") if isinstance(current_ir.get("stateMachine"), dict) else {}
+    states = sm.get("states", []) if isinstance(sm.get("states"), list) else []
+    transitions = sm.get("transitions", []) if isinstance(sm.get("transitions"), list) else []
+    state_ids = [s.get("id") for s in states if isinstance(s, dict) and isinstance(s.get("id"), str)]
+    state_set = set(state_ids)
+    initial = sm.get("initial") if isinstance(sm.get("initial"), str) else None
+
+    # Reachability
+    adj: Dict[str, List[str]] = {}
+    for t in transitions:
+        if not isinstance(t, dict):
+            continue
+        frm, to = t.get("from"), t.get("to")
+        if isinstance(frm, str) and isinstance(to, str):
+            adj.setdefault(frm, []).append(to)
+
+    reachable: set[str] = set()
+    if initial and initial in state_set:
+        stack = [initial]
+        while stack:
+            s = stack.pop()
+            if s in reachable:
+                continue
+            reachable.add(s)
+            for nxt in adj.get(s, []):
+                if nxt in state_set and nxt not in reachable:
+                    stack.append(nxt)
+
+    edits: List[Dict[str, Any]] = []
+    for sid in state_ids:
+        if sid != initial and initial and sid not in reachable:
+            edits.append({"op": "remove_state", "state_id": sid})
+
+    # Ambiguous/duplicate transitions
+    import json as _json
+    def _sig(obj: Any) -> str:
+        try:
+            return _json.dumps(obj, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            return str(obj)
+
+    seen = set()
+    for t in transitions:
+        if not isinstance(t, dict):
+            continue
+        frm, to = t.get("from"), t.get("to")
+        if not (isinstance(frm, str) and isinstance(to, str)):
+            continue
+        sig = (frm, _sig(t.get("triggers", [])), to)
+        if sig in seen:
+            edits.append({"op": "remove_transition", "from": frm, "to": to})
+        else:
+            seen.add(sig)
+
+    if not edits:
+        edits.append({"op": "set_state_label", "state_id": state_ids[0] if state_ids else "Idle", "label": state_ids[0] if state_ids else "Idle"})
+
+    return {"summary": "Applied automatic repairs (mock).", "edits": edits}

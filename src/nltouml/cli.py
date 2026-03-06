@@ -109,6 +109,22 @@ def build_parser() -> argparse.ArgumentParser:
     ae_p.add_argument("--mock", action="store_true", help="Run without LLM (simple heuristic patch generator)")
     ae_p.add_argument("--max-repairs", type=int, default=1, help="Max agent patch repair attempts if validation fails")
 
+    # ----- refine (Layers 5–7) -----
+    rf_p = sub.add_parser("refine", help="Run agentic validate+repair loop (Layers 5–7) on the CURRENT IR")
+    rf_p.add_argument("--bundle-name", required=True, help="Existing bundle name under --out-dir (must have baseline/current)")
+    rf_p.add_argument("--out-dir", default="outputs", help="Outputs directory containing the bundle")
+    rf_p.add_argument("--mock", action="store_true", help="Run without LLM (deterministic demo repairs)")
+    rf_p.add_argument("--max-iters", type=int, default=5, help="Max refine loop iterations")
+    rf_p.add_argument("--max-patch-repairs", type=int, default=2, help="Max attempts to repair an invalid patch per iteration")
+    rf_p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+
     return p
 
 
@@ -121,7 +137,7 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
-    if argv[0] in {"run", "metrics", "roundtrip", "agent-edit"}:
+    if argv[0] in {"run", "metrics", "roundtrip", "agent-edit", "refine"}:
         return argv
     # If user started with flags ("--text" etc.), treat as legacy `run`.
     if argv[0].startswith("-"):
@@ -217,6 +233,35 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Wrote diagram:         {out_paths['puml']}")
         if "validation" in out_paths:
             print(f"Wrote report:          {out_paths['validation']}")
+        return 0
+
+
+    if args.command == "refine":
+        from .refine import run_refine
+
+        settings = load_settings(templates_dir=args.templates_dir)
+        try:
+            out_paths, summary = run_refine(
+                bundle_name=args.bundle_name,
+                out_dir=Path(args.out_dir),
+                settings=settings,
+                use_mock=bool(args.mock),
+                max_iters=int(args.max_iters),
+                max_patch_repairs=int(args.max_patch_repairs),
+            )
+        except PipelineError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        for line in summary:
+            print(line)
+
+        print(f"Wrote revision dir:    {out_paths['revision_dir']}")
+        print(f"Wrote IR:              {out_paths['ir']}")
+        print(f"Wrote diagram:         {out_paths['puml']}")
+        print(f"Wrote report:          {out_paths['validation']}")
+        print(f"Wrote layer5 report:   {out_paths['layer5']}")
+        print(f"Updated current if OK: {Path(out_paths['bundle_root']) / 'current'}")
         return 0
 
     # args.command == "run"

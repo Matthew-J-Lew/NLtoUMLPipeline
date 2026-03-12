@@ -114,3 +114,43 @@ Now you can edit the .puml
 nlpipeline roundtrip --puml outputs/L1234_Test/edited.puml --baseline-ir outputs/L1234_Test/baseline/final.ir.json
 ```
 Now the results are the finished version of layer 4
+
+## MVP Studio UI
+
+A research-oriented MVP studio UI now lives in `studio/` and is backed by a FastAPI server under `src/nltouml/studio_api.py`.
+
+### Backend setup
+
+Install the backend extras:
+
+```bash
+pip install -e ".[studio]"
+```
+
+Run the API:
+
+```bash
+nltouml studio --host 127.0.0.1 --port 8000
+```
+
+### Frontend setup
+
+In a second terminal:
+
+```bash
+cd studio
+npm install
+npm run dev
+```
+
+Open the app at `http://127.0.0.1:5173`.
+
+### MVP Studio capabilities
+
+- Create a new baseline run from natural language
+- Browse existing bundles discovered in `outputs/`
+- Inspect the current IR, PlantUML, validation report, and diff
+- Edit PlantUML directly in the UI and round-trip it back into IR
+- Submit an agent edit request against the current model
+- Run the Layer 5–7 refine loop from the same screen
+- Inspect revision history and validation diagnostics in a single academic-style studio layout

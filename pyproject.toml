@@ -16,6 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 openai = ["openai>=1.0.0"]
+studio = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+]
 
 [project.scripts]
 nltouml = "nltouml.cli:main"

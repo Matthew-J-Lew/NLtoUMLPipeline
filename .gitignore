@@ -31,3 +31,9 @@ validation/
 
 # Logs
 *.log
+
+# node
+node_modules/
+
+# misc
+.DS_Store

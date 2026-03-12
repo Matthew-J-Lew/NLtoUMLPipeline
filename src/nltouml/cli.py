@@ -125,6 +125,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ----- studio -----
+    st_p = sub.add_parser("studio", help="Launch the FastAPI backend used by the MVP studio UI")
+    st_p.add_argument("--host", default="127.0.0.1", help="Host interface for the studio API")
+    st_p.add_argument("--port", type=int, default=8000, help="Port for the studio API")
+    st_p.add_argument("--out-dir", default="outputs", help="Directory containing output bundles")
+    st_p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+    st_p.add_argument("--reload", action="store_true", help="Enable uvicorn reload for local backend development")
+
     return p
 
 
@@ -137,7 +152,7 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
-    if argv[0] in {"run", "metrics", "roundtrip", "agent-edit", "refine"}:
+    if argv[0] in {"run", "metrics", "roundtrip", "agent-edit", "refine", "studio"}:
         return argv
     # If user started with flags ("--text" etc.), treat as legacy `run`.
     if argv[0].startswith("-"):
@@ -262,6 +277,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote report:          {out_paths['validation']}")
         print(f"Wrote layer5 report:   {out_paths['layer5']}")
         print(f"Updated current if OK: {Path(out_paths['bundle_root']) / 'current'}")
+        return 0
+
+    if args.command == "studio":
+        try:
+            import os
+            import uvicorn
+        except Exception:
+            print(
+                "ERROR: Studio dependencies are not installed. Run: pip install -e '.[studio]'",
+                file=sys.stderr,
+            )
+            return 2
+
+        os.environ["NLTOUML_STUDIO_OUT_DIR"] = str(Path(args.out_dir).resolve())
+        if args.templates_dir:
+            os.environ["NLTOUML_STUDIO_TEMPLATES_DIR"] = str(Path(args.templates_dir).resolve())
+
+        if args.reload:
+            uvicorn.run(
+                "nltouml.studio_api:app",
+                host=args.host,
+                port=int(args.port),
+                reload=True,
+            )
+        else:
+            from .studio_api import create_app
+
+            uvicorn.run(create_app(), host=args.host, port=int(args.port))
         return 0
 
     # args.command == "run"

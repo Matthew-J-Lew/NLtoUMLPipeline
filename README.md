@@ -154,3 +154,14 @@ Open the app at `http://127.0.0.1:5173`.
 - Submit an agent edit request against the current model
 - Run the Layer 5–7 refine loop from the same screen
 - Inspect revision history and validation diagnostics in a single academic-style studio layout
+
+## Optional: PlantUML Rendering
+
+To enable diagram previews:
+
+1. Install Java
+2. Install Graphviz
+3. Download `plantuml.jar` from https://plantuml.com/download
+4. Place it at:
+
+tools/plantuml.jar

@@ -10,7 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .agent_edit import run_agent_edit
-from .config import Settings, default_templates_dir, load_settings, repo_root
+from .config import Settings, load_settings, repo_root
+from .diagram_render import (
+    PlantUMLRenderError,
+    PlantUMLRendererUnavailable,
+    get_renderer_status,
+    render_plantuml_svg,
+)
 from .io_utils import read_json
 from .pipeline import PipelineError, run_pipeline
 from .refine import run_refine
@@ -41,6 +47,10 @@ class RefineRequest(BaseModel):
     use_mock: bool = False
     max_iters: int = Field(default=5, ge=1, le=10)
     max_patch_repairs: int = Field(default=2, ge=0, le=5)
+
+
+class RenderPlantUMLRequest(BaseModel):
+    puml: str = Field(min_length=1)
 
 
 class StudioContext(BaseModel):
@@ -236,11 +246,17 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
         ctx: StudioContext = app.state.ctx
+        renderer_status = get_renderer_status()
         return {
             "ok": True,
             "out_dir": str(ctx.out_dir),
             "templates_dir": str(ctx.settings.templates_dir),
             "openai_configured": bool(ctx.settings.openai_api_key),
+            "plantuml_renderer": renderer_status.model_dump() if hasattr(renderer_status, "model_dump") else {
+                "available": renderer_status.available,
+                "renderer": renderer_status.renderer,
+                "detail": renderer_status.detail,
+            },
         }
 
     @app.get("/api/projects")
@@ -260,6 +276,17 @@ def create_app() -> FastAPI:
         ctx: StudioContext = app.state.ctx
         snapshot = _load_snapshot(ctx, bundle_name)
         return {"project": snapshot.model_dump()}
+
+
+    @app.post("/api/render/plantuml")
+    def render_plantuml(req: RenderPlantUMLRequest) -> Dict[str, Any]:
+        try:
+            result = render_plantuml_svg(req.puml)
+        except PlantUMLRendererUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except PlantUMLRenderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"svg": result.svg, "renderer": result.renderer}
 
     @app.post("/api/projects/run")
     def create_project(req: RunRequest) -> Dict[str, Any]:

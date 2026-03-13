@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ProjectSnapshot } from "../types";
 import DiagramCanvas from "./DiagramCanvas";
 import PlantUMLPreview from "./PlantUMLPreview";
@@ -7,46 +7,36 @@ import SectionCard from "./SectionCard";
 type Props = {
   project?: ProjectSnapshot | null;
   pumlDraft: string;
-  onPumlDraftChange: (value: string) => void;
-  onRoundTrip: () => void;
-  roundTripDisabled?: boolean;
+  editorModeActive?: boolean;
 };
 
-const tabs = ["Diagram", "IR Graph", "PlantUML", "Current IR", "Diff"] as const;
+const tabs = ["Diagram", "IR Graph", "Current IR", "Diff"] as const;
 type Tab = (typeof tabs)[number];
 
-export default function ArtifactTabs({
-  project,
-  pumlDraft,
-  onPumlDraftChange,
-  onRoundTrip,
-  roundTripDisabled,
-}: Props) {
+export default function ArtifactTabs({ project, pumlDraft, editorModeActive = false }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("Diagram");
+
+  useEffect(() => {
+    if (editorModeActive) {
+      setActiveTab("Diagram");
+    }
+  }, [editorModeActive]);
 
   const tabBody = useMemo(() => {
     if (!project) return "";
-    if (activeTab === "PlantUML") return pumlDraft;
     if (activeTab === "Current IR") return JSON.stringify(project.current.ir ?? {}, null, 2);
     return JSON.stringify(project.current.diff ?? {}, null, 2);
-  }, [activeTab, project, pumlDraft]);
+  }, [activeTab, project]);
 
   return (
     <SectionCard
       title="Model workspace"
-      subtitle="Render the actual PlantUML artifact, keep the IR graph as a fallback, and inspect the canonical outputs."
-      action={
-        activeTab === "PlantUML" ? (
-          <button
-            type="button"
-            onClick={onRoundTrip}
-            disabled={roundTripDisabled}
-            className="rounded-full border border-indigo-500/50 bg-indigo-500/10 px-4 py-2 text-xs font-medium text-indigo-100 transition hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Round-trip PlantUML
-          </button>
-        ) : null
+      subtitle={
+        editorModeActive
+          ? "PlantUML edit mode is active in the left column. Keep the rendered model open here while editing, or inspect the canonical outputs below."
+          : "Render the actual PlantUML artifact, keep the IR graph as a fallback, and inspect the canonical outputs."
       }
+      className="transition-all duration-300"
     >
       <div className="mb-4 flex flex-wrap gap-2">
         {tabs.map((tab) => (
@@ -68,15 +58,6 @@ export default function ArtifactTabs({
       ) : null}
 
       {activeTab === "IR Graph" ? <DiagramCanvas ir={project?.current.ir} /> : null}
-
-      {activeTab === "PlantUML" ? (
-        <textarea
-          value={pumlDraft}
-          onChange={(event) => onPumlDraftChange(event.target.value)}
-          className="h-[620px] w-full rounded-2xl border border-slate-800 bg-slate-950/80 p-4 font-mono text-sm text-slate-100 outline-none transition focus:border-indigo-500/60"
-          spellCheck={false}
-        />
-      ) : null}
 
       {activeTab === "Current IR" || activeTab === "Diff" ? (
         <pre className="h-[620px] overflow-auto rounded-2xl border border-slate-800 bg-slate-950/80 p-4 font-mono text-sm text-slate-100">

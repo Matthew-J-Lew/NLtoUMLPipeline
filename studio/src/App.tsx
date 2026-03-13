@@ -3,12 +3,13 @@ import ActionPanel from "./components/ActionPanel";
 import ArtifactTabs from "./components/ArtifactTabs";
 import OverviewInspector from "./components/OverviewInspector";
 import ProjectBrowserModal from "./components/ProjectBrowserModal";
-import StatusBadge from "./components/StatusBadge";
 import { agentEdit, fetchProject, fetchProjects, refine, roundTrip, runPipeline } from "./lib/api";
 import type { ProjectSnapshot, ProjectSummary } from "./types";
 
 const EXAMPLE_SPEC =
   "When motion is detected, turn on the hallway light. When motion stops for 5 minutes, turn it off.";
+
+type ActionMode = "new" | "edit" | "refine" | "puml";
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -25,6 +26,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [actionMode, setActionMode] = useState<ActionMode>("new");
+  const [lastNonPumlMode, setLastNonPumlMode] = useState<Exclude<ActionMode, "puml">>("new");
 
   async function refreshProjects(preferredBundle?: string) {
     const items = await fetchProjects();
@@ -44,11 +47,13 @@ export default function App() {
     });
   }, []);
 
-  const modeBadge = useMemo(() => (useMock ? "Demo mode" : "LLM mode"), [useMock]);
   const activeSummary = useMemo(
     () => projects.find((item) => item.bundle_name === selectedBundle),
     [projects, selectedBundle],
   );
+  const isPumlEditing = actionMode === "puml";
+  const savedPuml = project?.current.puml ?? "";
+  const hasUnsavedPuml = pumlDraft !== savedPuml;
 
   async function withAction(label: string, action: () => Promise<void>) {
     try {
@@ -129,6 +134,23 @@ export default function App() {
     });
   }
 
+  function handleResetPumlDraft() {
+    setPumlDraft(savedPuml);
+    setNotice("Restored the saved PlantUML draft.");
+    setError(null);
+  }
+
+  function handleActionModeChange(nextMode: ActionMode) {
+    if (nextMode !== "puml") {
+      setLastNonPumlMode(nextMode);
+    }
+    setActionMode(nextMode);
+  }
+
+  function handleClosePumlEditor() {
+    setActionMode(lastNonPumlMode);
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50">
       <ProjectBrowserModal
@@ -147,11 +169,6 @@ export default function App() {
         <header className="mb-5 rounded-[2rem] border border-indigo-500/20 bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/30 px-5 py-4 shadow-panel">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="min-w-0">
-              <div className="mb-3 flex flex-wrap items-center gap-3">
-                <StatusBadge label="MVP Studio" tone="accent" />
-                <StatusBadge label={modeBadge} tone={useMock ? "warning" : "neutral"} />
-                <StatusBadge label={project?.summary.ok === true ? "Verified bundle" : "Editable workflow"} tone={project?.summary.ok === true ? "success" : "neutral"} />
-              </div>
               <h1 className="text-3xl font-semibold tracking-tight text-slate-50 sm:text-4xl">NL→UML Studio</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300 sm:text-base">
                 A cleaner verification-first workspace for generating, reviewing, rendering, and refining platform-neutral state machines.
@@ -172,12 +189,6 @@ export default function App() {
                         : "Select a bundle or create a new one to start working."}
                     </div>
                   </div>
-                  {activeSummary ? (
-                    <StatusBadge
-                      label={activeSummary.ok === true ? "OK" : activeSummary.ok === false ? "CHECK" : "NEW"}
-                      tone={activeSummary.ok === true ? "success" : activeSummary.ok === false ? "warning" : "neutral"}
-                    />
-                  ) : null}
                 </div>
               </div>
 
@@ -193,6 +204,7 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setBundleName(project?.bundle_name ? `${project.bundle_name}Copy` : "StudioMotionLight");
+                    handleActionModeChange("new");
                   }}
                   className="rounded-full border border-indigo-500/50 bg-indigo-500/10 px-4 py-2.5 text-sm font-medium text-indigo-100 transition hover:bg-indigo-500/20"
                 >
@@ -203,9 +215,21 @@ export default function App() {
           </div>
         </header>
 
-        <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)_320px]">
-          <div className="xl:sticky xl:top-5 xl:self-start">
+        <div
+          className={`grid gap-5 transition-all duration-300 ${
+            isPumlEditing
+              ? "xl:grid-cols-[46%_54%]"
+              : "xl:grid-cols-[300px_minmax(0,1fr)_320px]"
+          }`}
+        >
+          <div
+            className={`transition-all duration-300 ${
+              isPumlEditing ? "xl:self-stretch" : "xl:sticky xl:top-5 xl:self-start"
+            }`}
+          >
             <ActionPanel
+              mode={actionMode}
+              onModeChange={handleActionModeChange}
               currentBundle={project?.bundle_name}
               specText={specText}
               onSpecTextChange={setSpecText}
@@ -220,22 +244,27 @@ export default function App() {
               onRefine={handleRefine}
               loading={loading}
               hasProject={Boolean(project)}
-            />
-          </div>
-
-          <div className="min-w-0">
-            <ArtifactTabs
-              project={project}
               pumlDraft={pumlDraft}
               onPumlDraftChange={setPumlDraft}
               onRoundTrip={handleRoundTrip}
-              roundTripDisabled={!project || loading !== null}
+              onResetPumlDraft={handleResetPumlDraft}
+              onClosePumlEditor={handleClosePumlEditor}
+              isPumlEditing={isPumlEditing}
+              hasUnsavedPuml={hasUnsavedPuml}
+              error={error}
+              notice={notice}
             />
           </div>
 
-          <div className="xl:sticky xl:top-5 xl:self-start">
-            <OverviewInspector project={project} loading={loading} error={error} notice={notice} />
+          <div className="min-w-0 transition-all duration-300">
+            <ArtifactTabs project={project} pumlDraft={pumlDraft} editorModeActive={isPumlEditing} />
           </div>
+
+          {!isPumlEditing ? (
+            <div className="xl:sticky xl:top-5 xl:self-start transition-all duration-300">
+              <OverviewInspector project={project} loading={loading} error={error} notice={notice} />
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

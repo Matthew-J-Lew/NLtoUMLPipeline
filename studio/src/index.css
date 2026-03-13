@@ -25,3 +25,68 @@ body {
 ::selection {
   background: rgba(99, 102, 241, 0.35);
 }
+
+
+.studio-shell {
+  width: min(2100px, calc(100vw - 1.5rem));
+}
+
+.studio-preview-viewport {
+  height: clamp(380px, calc(100vh - 25rem), 680px);
+}
+
+@media (min-width: 1280px) {
+  .studio-main-grid {
+    grid-template-columns: clamp(250px, 18vw, 320px) minmax(0, 1fr) clamp(250px, 18vw, 320px);
+  }
+
+  .studio-main-grid--editing {
+    grid-template-columns: clamp(380px, 34vw, 560px) minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1536px) {
+  .studio-shell {
+    width: min(2200px, calc(100vw - 2.5rem));
+  }
+
+  .studio-main-grid {
+    grid-template-columns: clamp(270px, 17vw, 340px) minmax(0, 1fr) clamp(260px, 16vw, 330px);
+    gap: 1.25rem;
+  }
+
+  .studio-main-grid--editing {
+    grid-template-columns: clamp(420px, 33vw, 620px) minmax(0, 1fr);
+  }
+
+  .studio-preview-viewport {
+    height: clamp(440px, calc(100vh - 24rem), 760px);
+  }
+}
+
+@media (min-width: 1280px) and (max-height: 960px) {
+  .studio-shell {
+    padding-top: 0.875rem;
+    padding-bottom: 0.875rem;
+  }
+
+  .studio-header {
+    margin-bottom: 1rem;
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+  }
+
+  .studio-main-grid {
+    gap: 1rem;
+  }
+
+  .studio-preview-viewport {
+    height: clamp(340px, calc(100vh - 26rem), 520px);
+  }
+}
+
+@media (max-width: 639px) {
+  .studio-shell {
+    width: min(100vw - 1rem, 100%);
+  }
+}

@@ -3,6 +3,7 @@ import ActionPanel from "./components/ActionPanel";
 import ArtifactTabs from "./components/ArtifactTabs";
 import OverviewInspector from "./components/OverviewInspector";
 import ProjectBrowserModal from "./components/ProjectBrowserModal";
+import cls from "./utils";
 import { agentEdit, fetchProject, fetchProjects, refine, roundTrip, runPipeline } from "./lib/api";
 import type { ProjectSnapshot, ProjectSummary } from "./types";
 
@@ -165,8 +166,8 @@ export default function App() {
         }}
       />
 
-      <div className="mx-auto max-w-[1800px] px-4 py-5 sm:px-6 lg:px-8">
-        <header className="mb-5 rounded-[2rem] border border-indigo-500/20 bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/30 px-5 py-4 shadow-panel">
+      <div className="studio-shell mx-auto px-3 py-4 sm:px-4 lg:px-5 xl:px-6 2xl:px-8">
+        <header className="studio-header mb-4 rounded-[2rem] border border-indigo-500/20 bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/30 px-4 py-4 shadow-panel sm:px-5 lg:px-6">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="min-w-0">
               <h1 className="text-3xl font-semibold tracking-tight text-slate-50 sm:text-4xl">NL→UML Studio</h1>
@@ -216,16 +217,16 @@ export default function App() {
         </header>
 
         <div
-          className={`grid gap-5 transition-all duration-300 ${
-            isPumlEditing
-              ? "xl:grid-cols-[46%_54%]"
-              : "xl:grid-cols-[300px_minmax(0,1fr)_320px]"
-          }`}
+          className={cls(
+            "studio-main-grid grid gap-4 transition-all duration-300 xl:items-start",
+            isPumlEditing && "studio-main-grid--editing",
+          )}
         >
           <div
-            className={`transition-all duration-300 ${
-              isPumlEditing ? "xl:self-stretch" : "xl:sticky xl:top-5 xl:self-start"
-            }`}
+            className={cls(
+              "transition-all duration-300",
+              isPumlEditing ? "xl:self-stretch" : "xl:sticky xl:top-4 xl:self-start",
+            )}
           >
             <ActionPanel
               mode={actionMode}
@@ -261,7 +262,7 @@ export default function App() {
           </div>
 
           {!isPumlEditing ? (
-            <div className="xl:sticky xl:top-5 xl:self-start transition-all duration-300">
+            <div className="transition-all duration-300 xl:sticky xl:top-4 xl:self-start">
               <OverviewInspector project={project} loading={loading} error={error} notice={notice} />
             </div>
           ) : null}

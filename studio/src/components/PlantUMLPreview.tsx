@@ -201,7 +201,7 @@ export default function PlantUMLPreview({ puml, active: _active }: Props) {
       <div className="p-5">
         <div
           ref={setViewportEl}
-          className="relative h-[620px] overflow-hidden rounded-[2rem] border border-slate-800 bg-white"
+          className="studio-preview-viewport relative overflow-hidden rounded-[2rem] border border-slate-800 bg-white"
         >
           {loading && !hasDiagram ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-400">Rendering the current PlantUML diagram…</div>

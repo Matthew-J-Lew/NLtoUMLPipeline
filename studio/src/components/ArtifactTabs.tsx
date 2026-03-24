@@ -33,8 +33,8 @@ export default function ArtifactTabs({ project, pumlDraft, editorModeActive = fa
       title="Model workspace"
       subtitle={
         editorModeActive
-          ? "PlantUML edit mode is active in the left column. Keep the rendered model open here while editing, or inspect the canonical outputs below."
-          : "Render the actual PlantUML artifact, keep the IR graph as a fallback, and inspect the canonical outputs."
+          ? "Manual PlantUML edit mode is active in the left column. Your changes are automatically applied and rendered in the panel below."
+          : "Inspect the rendered PlantUML diagram and canonical outputs below."
       }
       className="transition-all duration-300"
     >

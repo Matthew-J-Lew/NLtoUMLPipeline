@@ -65,7 +65,7 @@ export default function OverviewInspector({
   return (
     <SectionCard
       title="Inspector"
-      subtitle="The most important bundle health and activity at a glance."
+      subtitle="The most important project health and stats at a glance."
       action={<StatusBadge label={status.label} tone={status.tone} />}
     >
       <div className="space-y-4">

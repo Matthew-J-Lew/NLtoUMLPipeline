@@ -33,10 +33,10 @@ type Props = {
 };
 
 const modes: Array<{ id: Mode; label: string; hint: string }> = [
-  { id: "new", label: "New model", hint: "Create a baseline bundle from natural language." },
-  { id: "edit", label: "Edit model", hint: "Request a targeted change against the current model." },
-  { id: "refine", label: "Refine", hint: "Run the repair loop on the currently selected bundle." },
-  { id: "puml", label: "Edit PlantUML", hint: "Enter a wider code-style editing mode while keeping the rendered model visible." },
+  { id: "new", label: "New model", hint: "Create a baseline model from natural language." },
+  { id: "edit", label: "Edit model", hint: "Ask an agent to modify the current model." },
+  { id: "refine", label: "Refine model", hint: "Run the agentic repair loop on the current model." },
+  { id: "puml", label: "Edit PlantUML", hint: "Manually edit the PlantUML code." },
 ];
 
 export default function ActionPanel({
@@ -71,8 +71,8 @@ export default function ActionPanel({
       title="Actions"
       subtitle={
         isPumlEditing
-          ? "PlantUML edit mode is active. The editor expands here while the model preview stays visible in the center."
-          : "Create, adjust, or refine a bundle from one place."
+          ? "Manually edit the PlantUML code for the current model. Use with caution, and follow the guidelines listed in the file."
+          : "Create a baseline model, apply edits, or run refinement on the active project."
       }
       className={cls(
         "transition-all duration-300",
@@ -160,10 +160,10 @@ export default function ActionPanel({
         {mode === "refine" ? (
           <div className="space-y-4">
             <div className="rounded-2xl border border-slate-800 bg-slate-950/55 px-4 py-4 text-sm text-slate-300">
-              <div className="font-medium text-slate-100">Selected bundle</div>
+              <div className="font-medium text-slate-100">Selected Project</div>
               <div className="mt-1">{currentBundle ?? "No bundle selected yet."}</div>
               <div className="mt-3 text-slate-400">
-                Runs the agentic repair loop using the current bundle as input and records a new revision if changes are applied.
+                Runs the agentic refine and repair loop on the current model and records a new revision if changes are applied.
               </div>
             </div>
             <button
@@ -172,7 +172,7 @@ export default function ActionPanel({
               disabled={!hasProject || loading !== null}
               className="w-full rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {loading === "Run refine loop" ? "Refining…" : "Run refine loop"}
+              {loading === "Run repair and refine loop" ? "Running…" : "Run repair and refine loop"}
             </button>
           </div>
         ) : null}
@@ -181,7 +181,7 @@ export default function ActionPanel({
           <div className="flex h-full min-h-0 flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-3 px-1 text-sm">
               <div className="min-w-0">
-                <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Editing bundle</div>
+                <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Editing Project</div>
                 <div className="truncate text-sm font-medium text-slate-100">{currentBundle ?? "No bundle selected"}</div>
               </div>
               <StatusBadge label={hasUnsavedPuml ? "Unsaved changes" : "Draft synced"} tone={hasUnsavedPuml ? "warning" : "success"} />
@@ -192,7 +192,7 @@ export default function ActionPanel({
               onChange={(event) => onPumlDraftChange(event.target.value)}
               className="min-h-0 flex-1 w-full rounded-2xl border border-slate-800 bg-slate-950/90 px-4 py-4 font-mono text-sm leading-6 text-slate-100 outline-none transition focus:border-indigo-500/60"
               spellCheck={false}
-              placeholder="No PlantUML is available yet. Generate or load a bundle first."
+              placeholder="No PlantUML is available yet. Generate or load a projectfirst."
             />
 
             <div className="grid gap-3 sm:grid-cols-2">
@@ -202,7 +202,7 @@ export default function ActionPanel({
                 disabled={!hasProject || loading !== null}
                 className="rounded-2xl border border-indigo-500/50 bg-indigo-500/10 px-4 py-3 text-sm font-medium text-indigo-100 transition hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loading === "Round-trip editor" ? "Round-tripping…" : "Round-trip PlantUML"}
+                {loading === "Validate against Schema" ? "Validating…" : "Validate against Schema"}
               </button>
               <button
                 type="button"
@@ -210,7 +210,7 @@ export default function ActionPanel({
                 disabled={!hasProject || loading !== null || !hasUnsavedPuml}
                 className="rounded-2xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm font-medium text-slate-200 transition hover:border-slate-600 hover:text-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Revert to saved PlantUML
+                Revert changes
               </button>
             </div>
 
@@ -230,7 +230,7 @@ export default function ActionPanel({
                 }}
                 className="rounded-2xl border border-rose-500/35 bg-rose-500/8 px-4 py-3 text-sm font-medium text-rose-100 transition hover:bg-rose-500/15"
               >
-                Cancel edit mode
+                Cancel changes
               </button>
             </div>
           </div>
@@ -244,7 +244,7 @@ export default function ActionPanel({
               onChange={(event) => onUseMockChange(event.target.checked)}
               className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-indigo-500"
             />
-            Use deterministic mock generation for demos and UI testing
+            Use mock generation
           </label>
         ) : null}
       </div>

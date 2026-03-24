@@ -170,9 +170,9 @@ export default function App() {
         <header className="studio-header mb-4 rounded-[2rem] border border-indigo-500/20 bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/30 px-4 py-4 shadow-panel sm:px-5 lg:px-6">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="min-w-0">
-              <h1 className="text-3xl font-semibold tracking-tight text-slate-50 sm:text-4xl">NL→UML Studio</h1>
+              <h1 className="text-3xl font-semibold tracking-tight text-slate-50 sm:text-4xl">AegisMod Studio</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300 sm:text-base">
-                A cleaner verification-first workspace for generating, reviewing, rendering, and refining platform-neutral state machines.
+                Generate and refine IoT state-machine models from natural language specifications. Powered by Agentic AI.
               </p>
             </div>
 
@@ -187,7 +187,7 @@ export default function App() {
                     <div className="mt-0.5 text-sm text-slate-400">
                       {activeSummary
                         ? `${activeSummary.states} states · ${activeSummary.transitions} transitions · ${activeSummary.revision_count} revisions`
-                        : "Select a bundle or create a new one to start working."}
+                        : "Open a new project or create a new one."}
                     </div>
                   </div>
                 </div>

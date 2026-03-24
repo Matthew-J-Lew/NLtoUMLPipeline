@@ -43,7 +43,7 @@ export default function ProjectBrowserModal({ open, projects, selectedBundle, on
           <div>
             <div className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-200">Browse all projects</div>
             <p className="mt-1 text-sm text-slate-400">
-              Switch the active bundle without crowding the main studio workspace.
+              Switch between all your available projects.
             </p>
           </div>
           <button

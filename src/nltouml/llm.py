@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .io_utils import try_extract_json
@@ -46,7 +47,11 @@ def _build_system_prompt(device_catalog: Dict[str, Any], capability_catalog: Dic
         "    }\n"
         "  }\n"
         "- triggers must be one of: becomes|changes|schedule|after.\n"
-        "- actions must be one of: command|delay|notify.\n\n"
+        "- actions must be one of: command|delay|notify.\n"
+        "- Clock-based schedule triggers MUST use {type:'schedule', cron:'...'} in the final JSON. Never use time or at fields in the final IR.\n"
+        "- Relative waiting uses {type:'after', seconds:N}, not a schedule trigger.\n"
+        "- Conditions/comparisons belong in guard expressions or trigger logic, never inside actions[].\n"
+        "- A command action MUST include a real device command; do not encode property/value/operator checks as actions.\n\n"
         "Device kinds and their attributes/commands (for checking):\n"
         f"{compact_kinds}\n\n"
         "Guidelines:\n"
@@ -55,6 +60,7 @@ def _build_system_prompt(device_catalog: Dict[str, Any], capability_catalog: Dic
         "- Prefer modeling time with an explicit timer transition: create an intermediate state and use a trigger {type:'after', seconds:N}.\n"
         "  (Example: motion->TimedLight (turn on), then TimedLight --after 30s--> Idle (turn off))\n"
         "- If you do use an ACTION delay, ensure it is followed by at least one action.\n"
+        "- When the requirement contains both an event and a persistent condition, put the event-like part in triggers and the persistent condition in guard.\n"
     )
 
 
@@ -122,6 +128,53 @@ def openai_generate_json(
     return LLMResult(text=text, raw=resp)
 
 
+
+
+def _write_llm_debug_text(debug_dir: Optional[Path], name: str, text: str) -> None:
+    if debug_dir is None:
+        return
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    (debug_dir / name).write_text(text, encoding="utf-8")
+
+
+def _generate_and_parse_json_with_retries(
+    *,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_attempts: int,
+    debug_dir: Optional[Path],
+    artifact_prefix: str,
+) -> Dict[str, Any]:
+    last_error: Optional[Exception] = None
+    attempt_prompt = user_prompt
+    for attempt in range(1, max(1, int(max_attempts)) + 1):
+        res = openai_generate_json(
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=attempt_prompt,
+        )
+        _write_llm_debug_text(debug_dir, f"{artifact_prefix}.attempt_{attempt:02d}.raw.txt", res.text or "")
+        try:
+            obj = try_extract_json(res.text)
+            if debug_dir is not None:
+                from .io_utils import write_json
+                write_json(debug_dir / f"{artifact_prefix}.attempt_{attempt:02d}.parsed.json", obj)
+            return obj
+        except Exception as e:
+            last_error = e
+            _write_llm_debug_text(debug_dir, f"{artifact_prefix}.attempt_{attempt:02d}.parse_error.txt", str(e))
+            attempt_prompt = (
+                user_prompt
+                + "\n\nIMPORTANT: Your previous response was not a single valid JSON object parseable by the pipeline. "
+                + f"Parse error: {e}. Return ONLY one JSON object with double-quoted keys and no prose."
+            )
+    debug_hint = f" See {debug_dir.as_posix()} for raw responses." if debug_dir is not None else ""
+    raise ValueError(f"JSON generation failed after {max(1, int(max_attempts))} attempts: {last_error}.{debug_hint}")
+
+
 def generate_ir_with_llm(
     text: str,
     *,
@@ -130,15 +183,24 @@ def generate_ir_with_llm(
     device_catalog: Dict[str, Any],
     capability_catalog: Dict[str, Any],
     ir_schema: Dict[str, Any],
+    debug_dir: Optional[Path] = None,
+    max_attempts: int = 3,
 ) -> Dict[str, Any]:
     sys_prompt = _build_system_prompt(device_catalog, capability_catalog, ir_schema)
     user_prompt = (
-        "Convert this requirement into IR JSON:\n"
+        "Convert this requirement into IR JSON.\n"
+        "Return ONLY one JSON object.\n"
         f"REQUIREMENT: {text}\n"
     )
-
-    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
-    return try_extract_json(res.text)
+    return _generate_and_parse_json_with_retries(
+        api_key=api_key,
+        model=model,
+        system_prompt=sys_prompt,
+        user_prompt=user_prompt,
+        max_attempts=max_attempts,
+        debug_dir=debug_dir,
+        artifact_prefix="generate_ir",
+    )
 
 
 def repair_ir_with_llm(
@@ -150,16 +212,28 @@ def repair_ir_with_llm(
     device_catalog: Dict[str, Any],
     capability_catalog: Dict[str, Any],
     ir_schema: Dict[str, Any],
+    debug_dir: Optional[Path] = None,
+    max_attempts: int = 2,
+    artifact_prefix: str = "repair_ir",
 ) -> Dict[str, Any]:
     sys_prompt = _build_system_prompt(device_catalog, capability_catalog, ir_schema)
     user_prompt = (
         "Fix the following IR JSON so it passes validation.\n"
-        "Return ONLY corrected JSON.\n\n"
+        "Return ONLY corrected JSON.\n"
+        "Keep schedule triggers canonical: use cron for clock schedules and after for relative waits.\n"
+        "Move condition-like checks into guard instead of actions when needed.\n\n"
         f"DIAGNOSTICS: {diagnostics}\n\n"
         f"IR: {ir}\n"
     )
-    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
-    return try_extract_json(res.text)
+    return _generate_and_parse_json_with_retries(
+        api_key=api_key,
+        model=model,
+        system_prompt=sys_prompt,
+        user_prompt=user_prompt,
+        max_attempts=max_attempts,
+        debug_dir=debug_dir,
+        artifact_prefix=artifact_prefix,
+    )
 
 
 def mock_generate_ir(text: str) -> Dict[str, Any]:
@@ -286,6 +360,10 @@ def _build_edit_patch_system_prompt(
         "- Prefer changing human-readable naming via set_state_label.\n"
         "- If you include \"index\", it refers to the Nth transition (0-based) among transitions matching the same from/to pair.\n"
         "- Any triggers/actions you include MUST be valid IR objects per schema (types: becomes|changes|schedule|after, and command|delay|notify).\n"
+        "- Every edit object MUST include a non-empty string op from the allowed list. Never use null/None for op.\n"
+        "- If you are unsure, return an empty edits list rather than a malformed edit object.\n"
+        "- For schedule triggers, use cron in the final patch payload, not time/at fields.\n"
+        "- Do not encode conditions or comparisons inside actions[]. Use guard for conditions.\n"
         "- You may ONLY reference these device ids: "
         + str(all_ids)
         + "\n\n"
@@ -310,6 +388,8 @@ def generate_edit_patch_with_llm(
     device_catalog: Dict[str, Any],
     capability_catalog: Dict[str, Any],
     ir_schema: Dict[str, Any],
+    debug_dir: Optional[Path] = None,
+    max_attempts: int = 3,
 ) -> Dict[str, Any]:
     sys_prompt = _build_edit_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
     user_prompt = (
@@ -318,8 +398,15 @@ def generate_edit_patch_with_llm(
         "CURRENT_IR:\n"
         f"{current_ir}\n"
     )
-    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
-    return try_extract_json(res.text)
+    return _generate_and_parse_json_with_retries(
+        api_key=api_key,
+        model=model,
+        system_prompt=sys_prompt,
+        user_prompt=user_prompt,
+        max_attempts=max_attempts,
+        debug_dir=debug_dir,
+        artifact_prefix="generate_edit_patch",
+    )
 
 
 def repair_edit_patch_with_llm(
@@ -333,18 +420,28 @@ def repair_edit_patch_with_llm(
     device_catalog: Dict[str, Any],
     capability_catalog: Dict[str, Any],
     ir_schema: Dict[str, Any],
+    debug_dir: Optional[Path] = None,
+    max_attempts: int = 2,
 ) -> Dict[str, Any]:
     sys_prompt = _build_edit_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
     user_prompt = (
         "The prior patch produced validation errors after being applied.\n"
-        "Return a corrected patch JSON using ONLY allowed ops.\n\n"
+        "Return a corrected patch JSON using ONLY allowed ops.\n"
+        "Every edit must include a valid string op. If unsure, return edits:[].\n\n"
         f"CHANGE_REQUEST:\n{request_text}\n\n"
         f"CURRENT_IR:\n{current_ir}\n\n"
         f"PRIOR_PATCH:\n{prior_patch}\n\n"
         f"DIAGNOSTICS:\n{diagnostics}\n"
     )
-    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
-    return try_extract_json(res.text)
+    return _generate_and_parse_json_with_retries(
+        api_key=api_key,
+        model=model,
+        system_prompt=sys_prompt,
+        user_prompt=user_prompt,
+        max_attempts=max_attempts,
+        debug_dir=debug_dir,
+        artifact_prefix="repair_edit_patch",
+    )
 
 
 def mock_generate_edit_patch(request_text: str, current_ir: Dict[str, Any]) -> Dict[str, Any]:
@@ -445,7 +542,11 @@ def _build_repair_patch_system_prompt(
         "- Do NOT invent new device ids; you may ONLY reference: " + str(all_ids) + "\n"
         "- Avoid renaming state IDs; prefer set_state_label.\n"
         "- If you include \"index\", it refers to the Nth transition (0-based) among transitions matching the same from/to pair.\n"
-        "- Any triggers/actions you include MUST be valid IR objects per schema (types: becomes|changes|schedule|after, and command|delay|notify).\n\n"
+        "- Any triggers/actions you include MUST be valid IR objects per schema (types: becomes|changes|schedule|after, and command|delay|notify).\n"
+        "- Every edit object MUST include a non-empty string op from the allowed list. Never use null/None for op.\n"
+        "- If unsure, return an empty edits list rather than malformed edits.\n"
+        "- For schedule triggers, use cron in the final patch payload, not time/at fields.\n"
+        "- Do not encode conditions or comparisons inside actions[]. Use guard for conditions.\n\n"
         "Current state IDs:\n" + str(states) + "\n"
         "Current transition endpoints:\n" + str(transitions) + "\n\n"
         "Device kinds and their attributes/commands (for checking):\n" + str(compact_kinds) + "\n"
@@ -462,17 +563,28 @@ def generate_repair_patch_with_llm(
     device_catalog: Dict[str, Any],
     capability_catalog: Dict[str, Any],
     ir_schema: Dict[str, Any],
+    debug_dir: Optional[Path] = None,
+    max_attempts: int = 3,
+    artifact_prefix: str = "generate_repair_patch",
 ) -> Dict[str, Any]:
     sys_prompt = _build_repair_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
     user_prompt = (
         "Fix the IR by returning a patch.\n"
-        "Prioritize ERRORs over WARNINGs.\n\n"
+        "Prioritize ERRORs over WARNINGs.\n"
+        "Every edit must include a valid string op. If unsure, return edits:[].\n\n"
         f"AGENTIC_ISSUES: {agentic_issues}\n\n"
         f"DETERMINISTIC_DIAGNOSTICS: {deterministic_diagnostics}\n\n"
         f"CURRENT_IR: {current_ir}\n"
     )
-    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
-    return try_extract_json(res.text)
+    return _generate_and_parse_json_with_retries(
+        api_key=api_key,
+        model=model,
+        system_prompt=sys_prompt,
+        user_prompt=user_prompt,
+        max_attempts=max_attempts,
+        debug_dir=debug_dir,
+        artifact_prefix=artifact_prefix,
+    )
 
 
 def repair_repair_patch_with_llm(
@@ -487,18 +599,29 @@ def repair_repair_patch_with_llm(
     device_catalog: Dict[str, Any],
     capability_catalog: Dict[str, Any],
     ir_schema: Dict[str, Any],
+    debug_dir: Optional[Path] = None,
+    max_attempts: int = 2,
+    artifact_prefix: str = "repair_repair_patch",
 ) -> Dict[str, Any]:
     sys_prompt = _build_repair_patch_system_prompt(device_catalog, capability_catalog, ir_schema, current_ir)
     user_prompt = (
-        "The prior patch failed to apply or produced invalid IR. Return a corrected patch JSON using ONLY allowed ops.\n\n"
+        "The prior patch failed to apply or produced invalid IR. Return a corrected patch JSON using ONLY allowed ops.\n"
+        "Every edit must include a valid string op. If unsure, return edits:[].\n\n"
         f"AGENTIC_ISSUES: {agentic_issues}\n\n"
         f"DETERMINISTIC_DIAGNOSTICS: {deterministic_diagnostics}\n\n"
         f"CURRENT_IR: {current_ir}\n\n"
         f"PRIOR_PATCH: {prior_patch}\n\n"
         f"PATCH_ERROR: {patch_error}\n"
     )
-    res = openai_generate_json(api_key=api_key, model=model, system_prompt=sys_prompt, user_prompt=user_prompt)
-    return try_extract_json(res.text)
+    return _generate_and_parse_json_with_retries(
+        api_key=api_key,
+        model=model,
+        system_prompt=sys_prompt,
+        user_prompt=user_prompt,
+        max_attempts=max_attempts,
+        debug_dir=debug_dir,
+        artifact_prefix=artifact_prefix,
+    )
 
 
 def mock_generate_repair_patch(

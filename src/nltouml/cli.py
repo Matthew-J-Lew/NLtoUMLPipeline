@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
       nlpipeline metrics --scenarios scenarios.csv
       nlpipeline roundtrip --puml outputs/Bundle1/edited.puml
       nlpipeline agent-edit --bundle-name Bundle1 --request "..."
+      nlpipeline regression-checks
     """
 
     p = argparse.ArgumentParser(prog="nltouml", description="NL -> IR -> PlantUML state machine")
@@ -58,6 +59,33 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_p.add_argument("--metric1-max-repairs", type=int, default=1, help="Max repairs for Metric 1 runs")
     metrics_p.add_argument("--metric2-max-repairs", type=int, default=0, help="Max repairs for Metric 2 runs")
     metrics_p.add_argument("--limit", type=int, default=None, help="Limit number of scenarios (debug)")
+
+    # ----- metrics-full -----
+    mf_p = sub.add_parser("metrics-full", help="Run the full end-to-end evaluation suite")
+    mf_p.add_argument("--scenarios", required=True, help="Path to scenarios.csv")
+    mf_p.add_argument("--out-dir", default="metrics_full_out", help="Directory to write evaluation outputs")
+    mf_p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+    mf_p.add_argument("--mock", action="store_true", help="Run without an LLM (deterministic demo)")
+    mf_p.add_argument("--pre-max-repairs", type=int, default=0, help="Max repairs allowed during the pre-refine baseline run")
+    mf_p.add_argument("--refine-max-iters", type=int, default=5, help="Max refine loop iterations")
+    mf_p.add_argument("--refine-max-patch-repairs", type=int, default=2, help="Max attempts to repair an invalid patch during refine")
+    mf_p.add_argument("--limit", type=int, default=None, help="Limit number of scenarios (debug)")
+    mf_p.add_argument("--skip-paraphrases", action="store_true", help="Skip paraphrase robustness evaluation")
+    mf_p.add_argument("--skip-adversarial", action="store_true", help="Skip adversarial bundle evaluation")
+    mf_p.add_argument("--adversarial-source-dir", default="outputs", help="Directory containing handcrafted adversarial bundles")
+    mf_p.add_argument(
+        "--adversarial-bundles",
+        nargs="*",
+        default=None,
+        help="Optional list of adversarial bundle names to evaluate. Defaults to the built-in bundle set.",
+    )
 
     # ----- roundtrip -----
     rt_p = sub.add_parser("roundtrip", help="Parse an edited PlantUML diagram back into IR + validation")
@@ -125,6 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ----- regression-checks -----
+    rc_p = sub.add_parser("regression-checks", help="Run lightweight robustness checks for recent failure modes")
+    rc_p.add_argument("--out", default=None, help="Optional JSON output path for the regression check report")
+
     # ----- studio -----
     st_p = sub.add_parser("studio", help="Launch the FastAPI backend used by the MVP studio UI")
     st_p.add_argument("--host", default="127.0.0.1", help="Host interface for the studio API")
@@ -152,7 +184,7 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
-    if argv[0] in {"run", "metrics", "roundtrip", "agent-edit", "refine", "studio"}:
+    if argv[0] in {"run", "metrics", "metrics-full", "roundtrip", "agent-edit", "refine", "regression-checks", "studio"}:
         return argv
     # If user started with flags ("--text" etc.), treat as legacy `run`.
     if argv[0].startswith("-"):
@@ -190,6 +222,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote per-scenario CSV: {out_paths['per_scenario_csv']}")
         print(f"Wrote summary CSV:      {out_paths['summary_csv']}")
         print(f"Wrote run artifacts:    {out_paths['runs_dir']}")
+        return 0
+
+    if args.command == "regression-checks":
+        from .regression_checks import run_regression_checks
+
+        out_path = Path(args.out) if args.out else None
+        summary = run_regression_checks(out_path=out_path)
+        print(f"Passed {summary['passed']}/{summary['total']} regression checks")
+        for check in summary.get("checks", []):
+            status = "PASS" if check.get("passed") else "FAIL"
+            print(f"- [{status}] {check.get('name')}")
+        if out_path is not None:
+            print(f"Wrote regression report: {out_path}")
+        return 0 if summary.get("ok") else 1
+
+    if args.command == "metrics-full":
+        from .metrics_full import run_full_metrics
+
+        settings = load_settings(templates_dir=args.templates_dir)
+        try:
+            out_paths = run_full_metrics(
+                scenarios_path=Path(args.scenarios),
+                out_dir=Path(args.out_dir),
+                settings=settings,
+                use_mock=bool(args.mock),
+                pre_max_repairs=int(args.pre_max_repairs),
+                refine_max_iters=int(args.refine_max_iters),
+                refine_max_patch_repairs=int(args.refine_max_patch_repairs),
+                limit=args.limit,
+                include_paraphrases=not bool(args.skip_paraphrases),
+                include_adversarial=not bool(args.skip_adversarial),
+                adversarial_source_dir=Path(args.adversarial_source_dir),
+                adversarial_bundles=args.adversarial_bundles,
+            )
+        except PipelineError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        print(f"Wrote scenario CSV:    {out_paths['scenario_results_csv']}")
+        print(f"Wrote paraphrase CSV:  {out_paths['paraphrase_results_csv']}")
+        print(f"Wrote adversarial CSV: {out_paths['adversarial_results_csv']}")
+        print(f"Wrote summary CSV:     {out_paths['summary_csv']}")
+        print(f"Wrote summary JSON:    {out_paths['summary_json']}")
+        print(f"Wrote markdown report: {out_paths['report_md']}")
+        print(f"Wrote run artifacts:   {out_paths['runs_dir']}")
         return 0
 
     if args.command == "roundtrip":

@@ -24,6 +24,7 @@ from .llm import (
     repair_edit_patch_with_llm,
     mock_generate_edit_patch,
 )
+from .patch_utils import patch_validation_error_message, validate_patch_structure
 
 # Reuse the lightweight IR diff used by roundtrip (good enough for stakeholders)
 from .roundtrip import _simple_ir_diff  # type: ignore
@@ -346,6 +347,8 @@ def run_agent_edit(
     req_path = revision_dir / "source.request.txt"
     write_text(req_path, request_text)
 
+    llm_debug_dir = revision_dir / "llm"
+
     # Generate patch (and repair once if needed)
     if use_mock:
         patch = mock_generate_edit_patch(request_text, parent_ir)
@@ -360,10 +363,18 @@ def run_agent_edit(
             device_catalog=device_catalog,
             capability_catalog=capability_catalog,
             ir_schema=ir_schema,
+            debug_dir=llm_debug_dir,
+            max_attempts=3,
         )
+
+    patch_validation = validate_patch_structure(patch)
+    write_json(revision_dir / "agent.patch.validation.json", patch_validation)
 
     # Apply patch -> IR (raw)
     try:
+        if not patch_validation.get("ok", False):
+            raise PipelineError(patch_validation_error_message(patch_validation))
+        patch = patch_validation.get("sanitized_patch", patch)
         raw_ir = apply_ir_patch(parent_ir, patch)
     except Exception as e:
         # Write what we can and return an error report
@@ -437,7 +448,14 @@ def run_agent_edit(
             device_catalog=device_catalog,
             capability_catalog=capability_catalog,
             ir_schema=ir_schema,
+            debug_dir=llm_debug_dir,
+            max_attempts=2,
         )
+        patch_validation = validate_patch_structure(patch)
+        write_json(revision_dir / "agent.patch.validation.json", patch_validation)
+        if not patch_validation.get("ok", False):
+            raise PipelineError(patch_validation_error_message(patch_validation))
+        patch = patch_validation.get("sanitized_patch", patch)
         raw_ir = apply_ir_patch(parent_ir, patch)
         write_json(revision_dir / "agent.patch.json", patch)
         write_json(revision_dir / "raw.ir.json", raw_ir)

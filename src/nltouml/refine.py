@@ -22,6 +22,7 @@ from .llm import (
     repair_repair_patch_with_llm,
     mock_generate_repair_patch,
 )
+from .patch_utils import patch_validation_error_message, validate_patch_structure
 
 # Reuse lightweight diff used elsewhere
 from .roundtrip import _simple_ir_diff  # type: ignore
@@ -84,6 +85,46 @@ def _compile_and_validate(
     return ir1, det_report, agent_report
 
 
+def _write_failure_summary(
+    *,
+    revision_dir: Path,
+    bundle_name: str,
+    parent_ir_path: Path,
+    iterations_run: int,
+    stage: str,
+    reason: str,
+    current_ir: Dict[str, Any],
+) -> None:
+    summary_obj = {
+        "bundle_name": bundle_name,
+        "start_ir_path": parent_ir_path.as_posix(),
+        "iterations_run": iterations_run,
+        "stop_reason": f"{stage}: {reason}",
+        "deterministic_ok": False,
+        "layer5_ok": False,
+        "overall_ok": False,
+        "failure_stage": stage,
+        "failure_reason": reason,
+    }
+    write_json(revision_dir / "failure.current_ir.json", current_ir)
+    write_json(revision_dir / "summary.json", summary_obj)
+    summary_lines_md = [
+        "# Agentic Refine Summary",
+        "",
+        f"- **Bundle:** {bundle_name}",
+        f"- **Start IR:** {parent_ir_path.as_posix()}",
+        f"- **Iterations run:** {iterations_run}",
+        f"- **Stop reason:** {stage}: {reason}",
+        "",
+        "## Final status",
+        "- Deterministic validation: ❌ FAILED",
+        "- Layer 5 (agentic) checks: ❌ FAILED",
+        "- Overall: ❌ FAILED",
+        "",
+    ]
+    write_text(revision_dir / "summary.md", "\n".join(summary_lines_md) + "\n")
+
+
 def run_refine(
     *,
     bundle_name: str,
@@ -139,91 +180,160 @@ def run_refine(
     iterations_run = 0
     stop_reason = ""
     last_patch: Optional[Dict[str, Any]] = None
+    last_patch_summary = ""
 
-    for it in range(1, max(1, int(max_iters)) + 1):
-        iterations_run = it
-        h = _hash_ir(cur_ir)
-        if h in seen_hashes:
-            stop_reason = "Detected oscillation (IR repeated)."
-            break
-        seen_hashes.add(h)
-
-        iter_dir = revision_dir / "iterations" / f"iter_{it:03d}"
-        iter_dir.mkdir(parents=True, exist_ok=False)
-
-        # Record current state
-        write_json(iter_dir / "input.ir.json", cur_ir)
-        write_json(iter_dir / "validation_report.json", det_report)
-        write_json(iter_dir / "l5.validation_agent.json", layer5_report)
-
-        ok_det = bool(det_report.get("ok", False))
-        ok_l5 = bool(layer5_report.get("ok", False))
-        if ok_det and ok_l5:
-            stop_reason = "Converged (deterministic + agentic OK)."
-            break
-
-        # Layer 6: produce a PATCH (not a rewritten IR)
-        agentic_issues = layer5_report.get("issues", []) if isinstance(layer5_report.get("issues"), list) else []
-        deterministic_diags = det_report.get("diagnostics", []) if isinstance(det_report.get("diagnostics"), list) else []
-
-        if use_mock:
-            patch = mock_generate_repair_patch(current_ir=cur_ir)
-        else:
-            if not settings.openai_api_key:
-                raise PipelineError("OPENAI_API_KEY not set. Either set it, or run with --mock.")
-            patch = generate_repair_patch_with_llm(
-                current_ir=cur_ir,
-                agentic_issues=agentic_issues,
-                deterministic_diagnostics=deterministic_diags,
-                api_key=settings.openai_api_key,
-                model=settings.openai_model,
-                device_catalog=device_catalog,
-                capability_catalog=capability_catalog,
-                ir_schema=ir_schema,
-            )
-
-        # Attempt to apply patch; if it fails, try patch-repair a couple times.
-        patch_repairs = 0
-        while True:
-            try:
-                raw_ir = apply_ir_patch(cur_ir, patch)
+    try:
+        for it in range(1, max(1, int(max_iters)) + 1):
+            iterations_run = it
+            h = _hash_ir(cur_ir)
+            if h in seen_hashes:
+                stop_reason = "Detected oscillation (IR repeated)."
                 break
-            except Exception as e:
-                patch_repairs += 1
-                if use_mock or patch_repairs > max(0, int(max_patch_repairs)):
-                    raise PipelineError(f"Failed to apply repair patch: {e}") from e
-                patch = repair_repair_patch_with_llm(
+            seen_hashes.add(h)
+
+            iter_dir = revision_dir / "iterations" / f"iter_{it:03d}"
+            iter_dir.mkdir(parents=True, exist_ok=False)
+            llm_debug_dir = iter_dir / "llm"
+
+            # Record current state
+            write_json(iter_dir / "input.ir.json", cur_ir)
+            write_json(iter_dir / "validation_report.json", det_report)
+            write_json(iter_dir / "l5.validation_agent.json", layer5_report)
+
+            ok_det = bool(det_report.get("ok", False))
+            ok_l5 = bool(layer5_report.get("ok", False))
+            if ok_det and ok_l5:
+                stop_reason = "Converged (deterministic + agentic OK)."
+                break
+
+            # Layer 6: produce a PATCH (not a rewritten IR)
+            agentic_issues = layer5_report.get("issues", []) if isinstance(layer5_report.get("issues"), list) else []
+            deterministic_diags = det_report.get("diagnostics", []) if isinstance(det_report.get("diagnostics"), list) else []
+
+            if use_mock:
+                patch = mock_generate_repair_patch(current_ir=cur_ir)
+            else:
+                if not settings.openai_api_key:
+                    raise PipelineError("OPENAI_API_KEY not set. Either set it, or run with --mock.")
+                patch = generate_repair_patch_with_llm(
                     current_ir=cur_ir,
                     agentic_issues=agentic_issues,
                     deterministic_diagnostics=deterministic_diags,
-                    prior_patch=patch,
-                    patch_error=str(e),
-                    api_key=settings.openai_api_key or "",
+                    api_key=settings.openai_api_key,
                     model=settings.openai_model,
                     device_catalog=device_catalog,
                     capability_catalog=capability_catalog,
                     ir_schema=ir_schema,
+                    debug_dir=llm_debug_dir,
+                    max_attempts=3,
+                    artifact_prefix="generate_repair_patch",
                 )
 
-        last_patch = patch
-        write_json(iter_dir / "l6.repair_agent.patch.json", patch)
-        write_json(iter_dir / "raw.ir.json", raw_ir)
+            raw_ir: Optional[Dict[str, Any]] = None
+            patch_attempt = 0
+            max_patch_attempts = 1 + max(0, int(max_patch_repairs))
+            last_patch_error = ""
 
-        # Re-compile and validate after applying patch
-        compiled, det_report, layer5_report = _compile_and_validate(
-            raw_ir,
-            ir_schema=ir_schema,
-            device_catalog=device_catalog,
-            capability_catalog=capability_catalog,
-        )
-        cur_ir = compiled
+            while patch_attempt < max_patch_attempts:
+                patch_attempt += 1
+                patch_path = iter_dir / f"l6.repair_agent.patch.attempt_{patch_attempt:02d}.json"
+                patch_validation_path = iter_dir / f"l6.repair_agent.patch.attempt_{patch_attempt:02d}.validation.json"
+                patch_error_path = iter_dir / f"l6.repair_agent.patch.attempt_{patch_attempt:02d}.error.txt"
+                write_json(patch_path, patch)
 
-        write_json(iter_dir / "final.ir.json", cur_ir)
-        write_json(iter_dir / "validation_report.after.json", det_report)
-        write_json(iter_dir / "l5.validation_agent.after.json", layer5_report)
+                patch_validation = validate_patch_structure(patch)
+                write_json(patch_validation_path, patch_validation)
+                if not patch_validation.get("ok", False):
+                    last_patch_error = patch_validation_error_message(patch_validation)
+                    write_text(patch_error_path, last_patch_error)
+                    if use_mock or patch_attempt >= max_patch_attempts:
+                        break
+                    patch = repair_repair_patch_with_llm(
+                        current_ir=cur_ir,
+                        agentic_issues=agentic_issues,
+                        deterministic_diagnostics=deterministic_diags,
+                        prior_patch=patch,
+                        patch_error=last_patch_error,
+                        api_key=settings.openai_api_key or "",
+                        model=settings.openai_model,
+                        device_catalog=device_catalog,
+                        capability_catalog=capability_catalog,
+                        ir_schema=ir_schema,
+                        debug_dir=llm_debug_dir,
+                        max_attempts=2,
+                        artifact_prefix=f"repair_repair_patch_attempt_{patch_attempt:02d}",
+                    )
+                    continue
 
-        puml = ir_to_plantuml(cur_ir, title=bundle_name)
-        write_text(iter_dir / "final.puml", puml)
+                sanitized_patch = patch_validation.get("sanitized_patch", patch)
+                try:
+                    raw_ir = apply_ir_patch(cur_ir, sanitized_patch)
+                    patch = sanitized_patch
+                    write_json(iter_dir / "l6.repair_agent.patch.json", patch)
+                    write_json(iter_dir / "l6.repair_agent.patch.validation.json", patch_validation)
+                    break
+                except Exception as e:
+                    last_patch_error = f"Patch apply failure: {e}"
+                    write_text(patch_error_path, last_patch_error)
+                    if use_mock or patch_attempt >= max_patch_attempts:
+                        break
+                    patch = repair_repair_patch_with_llm(
+                        current_ir=cur_ir,
+                        agentic_issues=agentic_issues,
+                        deterministic_diagnostics=deterministic_diags,
+                        prior_patch=patch,
+                        patch_error=last_patch_error,
+                        api_key=settings.openai_api_key or "",
+                        model=settings.openai_model,
+                        device_catalog=device_catalog,
+                        capability_catalog=capability_catalog,
+                        ir_schema=ir_schema,
+                        debug_dir=llm_debug_dir,
+                        max_attempts=2,
+                        artifact_prefix=f"repair_repair_patch_attempt_{patch_attempt:02d}",
+                    )
+
+            if raw_ir is None:
+                failure_reason = last_patch_error or "Unknown repair patch failure."
+                _write_failure_summary(
+                    revision_dir=revision_dir,
+                    bundle_name=bundle_name,
+                    parent_ir_path=parent_ir_path,
+                    iterations_run=iterations_run,
+                    stage="Patch repair failed",
+                    reason=failure_reason,
+                    current_ir=cur_ir,
+                )
+                raise PipelineError(
+                    f"Failed to produce/apply a valid repair patch after {max_patch_attempts} attempt(s): {failure_reason}. "
+                    f"See {revision_dir.as_posix()} for patch validation and raw LLM artifacts."
+                )
+
+            last_patch = patch
+            if isinstance(last_patch, dict):
+                ps = last_patch.get("summary")
+                if isinstance(ps, str):
+                    last_patch_summary = ps.strip()
+            write_json(iter_dir / "raw.ir.json", raw_ir)
+
+            # Re-compile and validate after applying patch
+            compiled, det_report, layer5_report = _compile_and_validate(
+                raw_ir,
+                ir_schema=ir_schema,
+                device_catalog=device_catalog,
+                capability_catalog=capability_catalog,
+            )
+            cur_ir = compiled
+
+            write_json(iter_dir / "final.ir.json", cur_ir)
+            write_json(iter_dir / "validation_report.after.json", det_report)
+            write_json(iter_dir / "l5.validation_agent.after.json", layer5_report)
+
+            puml = ir_to_plantuml(cur_ir, title=bundle_name)
+            write_text(iter_dir / "final.puml", puml)
+    except Exception:
+        # Partial artifacts have already been written above.
+        raise
 
     # Final artifacts at revision root (Layer 7 canonical output boundary)
     final_ir, final_det_report, final_layer5_report = _compile_and_validate(
@@ -249,12 +359,6 @@ def run_refine(
     ok = ok_det and ok_l5
 
     # Summary.md
-    patch_summary = ""
-    if isinstance(last_patch, dict):
-        ps = last_patch.get("summary")
-        if isinstance(ps, str):
-            patch_summary = ps.strip()
-
     summary_lines_md: List[str] = [
         "# Agentic Refine Summary",
         "",
@@ -269,10 +373,22 @@ def run_refine(
         f"- Overall: {'✅ OK' if ok else '❌ FAILED'}",
         "",
     ]
-    if patch_summary:
-        summary_lines_md += ["## Last repair patch summary", patch_summary, ""]
+    if last_patch_summary:
+        summary_lines_md += ["## Last repair patch summary", last_patch_summary, ""]
 
     write_text(revision_dir / "summary.md", "\n".join(summary_lines_md) + "\n")
+
+    summary_obj = {
+        "bundle_name": bundle_name,
+        "start_ir_path": parent_ir_path.as_posix(),
+        "iterations_run": iterations_run,
+        "stop_reason": stop_reason or "Reached max iterations.",
+        "deterministic_ok": ok_det,
+        "layer5_ok": ok_l5,
+        "overall_ok": ok,
+        "last_patch_summary": last_patch_summary,
+    }
+    write_json(revision_dir / "summary.json", summary_obj)
 
     # Manifest + current pointer
     points_to = f"edits/{revision_dir.name}"
@@ -309,5 +425,6 @@ def run_refine(
         "layer5": revision_dir / "l5.validation_agent.json",
         "diff": revision_dir / "diff.json",
         "summary": revision_dir / "summary.md",
+        "summary_json": revision_dir / "summary.json",
     }
     return out_paths, summary_lines

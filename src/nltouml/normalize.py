@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
+
+import re
 
 
 def _to_literal(v: Any) -> Dict[str, Any]:
@@ -26,6 +28,297 @@ def _unit_seconds(duration: Any, unit: Any) -> Any:
     if u in ("h", "hr", "hrs", "hour", "hours"):
         return int(duration * 3600)
     return int(duration)
+
+
+def _looks_like_cron(value: str) -> bool:
+    parts = [p for p in value.strip().split() if p]
+    return len(parts) in (5, 6)
+
+
+def _time_like_to_cron(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    if _looks_like_cron(s):
+        return s
+
+    m = re.fullmatch(r"(?i)\s*(\d{1,2})(?::(\d{2}))?\s*([ap]m)?\s*", s)
+    if not m:
+        return s
+
+    hour = int(m.group(1))
+    minute = int(m.group(2) or "0")
+    suffix = (m.group(3) or "").lower()
+
+    if suffix == "am":
+        if hour == 12:
+            hour = 0
+    elif suffix == "pm":
+        if hour != 12:
+            hour += 12
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return s
+    return f"{minute} {hour} * * *"
+
+
+def _merge_guards(existing: Any, rescued: List[Dict[str, Any]]) -> Any:
+    if not rescued:
+        return existing
+    merged: List[Dict[str, Any]] = []
+    if isinstance(existing, dict):
+        if existing.get("op") == "and" and isinstance(existing.get("args"), list):
+            merged.extend(a for a in existing["args"] if isinstance(a, dict))
+        else:
+            merged.append(existing)
+    merged.extend(rescued)
+    if len(merged) == 1:
+        return merged[0]
+    return {"op": "and", "args": merged}
+
+
+
+
+def _strip_balanced_outer_parens(text: str) -> str:
+    s = text.strip()
+    while s.startswith("(") and s.endswith(")"):
+        depth = 0
+        in_quote = False
+        quote_char = ""
+        balanced = True
+        for i, ch in enumerate(s):
+            if in_quote:
+                if ch == quote_char and (i == 0 or s[i - 1] != "\\"):
+                    in_quote = False
+                continue
+            if ch in ("\"", "'"):
+                in_quote = True
+                quote_char = ch
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i != len(s) - 1:
+                    balanced = False
+                    break
+                if depth < 0:
+                    balanced = False
+                    break
+        if not balanced or depth != 0:
+            break
+        s = s[1:-1].strip()
+    return s
+
+
+def _split_top_level(text: str, operator: str) -> List[str]:
+    s = text.strip()
+    parts: List[str] = []
+    depth = 0
+    in_quote = False
+    quote_char = ""
+    start = 0
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if in_quote:
+            if ch == quote_char and (i == 0 or s[i - 1] != "\\"):
+                in_quote = False
+            i += 1
+            continue
+        if ch in ("\"", "'"):
+            in_quote = True
+            quote_char = ch
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0 and s.startswith(operator, i):
+            parts.append(s[start:i].strip())
+            i += len(operator)
+            start = i
+            continue
+        i += 1
+    if parts:
+        parts.append(s[start:].strip())
+    return [p for p in parts if p]
+
+
+def _token_to_literal(token: str) -> Optional[Dict[str, Any]]:
+    s = token.strip()
+    if not s:
+        return None
+    if (s.startswith(""") and s.endswith(""")) or (s.startswith("'") and s.endswith("'")):
+        return {"string": s[1:-1]}
+    sl = s.lower()
+    if sl == "true":
+        return {"bool": True}
+    if sl == "false":
+        return {"bool": False}
+    if re.fullmatch(r"-?\d+", s):
+        return {"number": int(s)}
+    if re.fullmatch(r"-?\d+\.\d+", s):
+        return {"number": float(s)}
+    if s:
+        return {"string": s}
+    return None
+
+
+def _token_to_ref(token: str) -> Optional[Dict[str, str]]:
+    s = token.strip()
+    m = re.fullmatch(r"([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)", s)
+    if not m:
+        return None
+    return {"device": m.group(1), "path": m.group(2)}
+
+
+def _parse_guard_string_expr(text: str) -> Optional[Dict[str, Any]]:
+    s = _strip_balanced_outer_parens(text)
+    if not s:
+        return None
+
+    for delim, op in (("||", "or"), ("&&", "and")):
+        parts = _split_top_level(s, delim)
+        if len(parts) > 1:
+            args: List[Dict[str, Any]] = []
+            for part in parts:
+                parsed = _parse_guard_string_expr(part)
+                if not isinstance(parsed, dict):
+                    return None
+                args.append(parsed)
+            return {"op": op, "args": args}
+
+    lower = s.lower()
+    if lower.startswith("not "):
+        inner = _parse_guard_string_expr(s[4:])
+        if isinstance(inner, dict):
+            return {"op": "not", "args": [inner]}
+        return None
+    if s.startswith("!"):
+        inner = _parse_guard_string_expr(s[1:])
+        if isinstance(inner, dict):
+            return {"op": "not", "args": [inner]}
+        return None
+
+    m = re.fullmatch(r"(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)", s)
+    if m:
+        left_raw, cmp_op, right_raw = m.group(1).strip(), m.group(2), m.group(3).strip()
+        ref = _token_to_ref(left_raw)
+        lit = _token_to_literal(right_raw)
+        if ref is not None and lit is not None:
+            op_map = {"==": "eq", "!=": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte"}
+            return {"op": op_map[cmp_op], "args": [{"ref": ref}, {"lit": lit}]}
+
+    ref = _token_to_ref(s)
+    if ref is not None:
+        return {"ref": ref}
+    lit = _token_to_literal(s)
+    if lit is not None and s.lower() in {"true", "false"}:
+        return {"lit": lit}
+    return None
+
+
+def _extract_schedule_triggers_from_guard_string(text: str) -> List[Dict[str, Any]]:
+    s = _strip_balanced_outer_parens(text)
+    if not s:
+        return []
+
+    or_parts = _split_top_level(s, "||")
+    if len(or_parts) > 1:
+        out: List[Dict[str, Any]] = []
+        for part in or_parts:
+            out.extend(_extract_schedule_triggers_from_guard_string(part))
+        dedup: List[Dict[str, Any]] = []
+        seen = set()
+        for tg in out:
+            key = (tg.get("type"), tg.get("cron"), tg.get("seconds"))
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(tg)
+        return dedup
+
+    m = re.fullmatch(r"(?:time|clock(?:\.hour)?)\s*(>=|>|==)\s*(.+)", s, flags=re.IGNORECASE)
+    if not m:
+        return []
+    rhs = m.group(2).strip()
+    cron = _time_like_to_cron(rhs)
+    if not isinstance(cron, str):
+        return []
+    return [{"type": "schedule", "cron": cron}]
+
+
+def _coerce_transition_guard_in_place(tr: Dict[str, Any]) -> None:
+    guard = tr.get("guard")
+    if not isinstance(guard, str):
+        return
+    parsed = _parse_guard_string_expr(guard)
+    if isinstance(parsed, dict):
+        tr["guard"] = parsed
+        return
+    scheduleish = _extract_schedule_triggers_from_guard_string(guard)
+    if scheduleish:
+        triggers = tr.get("triggers") if isinstance(tr.get("triggers"), list) else []
+        existing = {
+            (tg.get("type"), tg.get("cron"), tg.get("seconds"))
+            for tg in triggers if isinstance(tg, dict)
+        }
+        for tg in scheduleish:
+            key = (tg.get("type"), tg.get("cron"), tg.get("seconds"))
+            if key not in existing:
+                triggers.append(tg)
+                existing.add(key)
+        tr["triggers"] = triggers
+        tr.pop("guard", None)
+def _action_to_guard_expr(action: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    dev = action.get("device") or action.get("deviceId") or action.get("device_id")
+    attr = (
+        action.get("property")
+        or action.get("attribute")
+        or action.get("attr")
+        or action.get("path")
+        or action.get("prop")
+    )
+    raw_value = action.get("value")
+    if raw_value is None:
+        raw_value = action.get("state") or action.get("equals") or action.get("expected")
+
+    conditionish_cmds = {"equals", "eq", "is", "is_not", "not_equals", "neq", "check", "condition"}
+    command = action.get("command")
+    has_condition_keys = any(k in action for k in ("operator", "property", "attribute", "attr", "path", "equals", "state", "expected"))
+    looks_like_condition = has_condition_keys and raw_value is not None and isinstance(dev, str) and isinstance(attr, str) and (
+        not isinstance(command, str) or command.strip().lower() in conditionish_cmds
+    )
+    if not looks_like_condition:
+        return None
+
+    op_raw = action.get("operator") or action.get("comparison") or command or "equals"
+    if not isinstance(op_raw, str):
+        op_raw = "equals"
+    op_norm = op_raw.strip().lower()
+    if op_norm in {"equals", "eq", "is", "=="}:
+        expr_op = "eq"
+    elif op_norm in {"not_equals", "neq", "is_not", "!=", "not"}:
+        expr_op = "neq"
+    else:
+        return None
+
+    lit = raw_value if isinstance(raw_value, dict) and any(k in raw_value for k in ("string", "number", "bool")) else _to_literal(raw_value)
+    return {
+        "op": expr_op,
+        "args": [
+            {"ref": {"device": dev, "path": attr}},
+            {"lit": lit},
+        ],
+    }
 
 
 def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[str, Any]:
@@ -193,6 +486,9 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
             if "actions" not in tr or not isinstance(tr.get("actions"), list):
                 tr["actions"] = []
 
+            # guard (models sometimes emit code-like strings; coerce simple cases)
+            _coerce_transition_guard_in_place(tr)
+
             # triggers
             triggers = tr.get("triggers")
             if isinstance(triggers, list):
@@ -275,6 +571,14 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                     if isinstance(typ, str):
                         typ = typ.strip()
 
+                    if isinstance(typ, str) and typ == "schedule" and not (isinstance(dev, str) and isinstance(attr, str)):
+                        cron = t.get("cron") or t.get("schedule") or t.get("time") or t.get("at") or t.get("event")
+                        cron = _time_like_to_cron(cron)
+                        if isinstance(cron, str):
+                            t.clear()
+                            t.update({"type": "schedule", "cron": cron})
+                            continue
+
                     if isinstance(dev, str) and isinstance(attr, str) and isinstance(typ, str):
                         new_t: Dict[str, Any] = {
                             "type": typ,
@@ -295,6 +599,7 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
 
                         elif typ == "schedule":
                             cron = t.get("cron") or t.get("schedule") or t.get("time") or t.get("at") or t.get("event")
+                            cron = _time_like_to_cron(cron)
                             if isinstance(cron, str):
                                 new_t["cron"] = cron
                             else:
@@ -316,8 +621,14 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
             actions = tr.get("actions")
             if isinstance(actions, list):
                 coerced_actions = []
+                rescued_guards: List[Dict[str, Any]] = []
                 for a in actions:
                     if not isinstance(a, dict):
+                        continue
+
+                    rescued_guard = _action_to_guard_expr(a)
+                    if isinstance(rescued_guard, dict):
+                        rescued_guards.append(rescued_guard)
                         continue
 
                     # Canonical action schema:
@@ -325,7 +636,13 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                     #   delay:   {type:'delay', seconds:int}
                     #   notify:  {type:'notify', message:str}
 
-                    # Variant: {device:'x', command:'on'} (missing type)
+                    # Normalize common command-like aliases before type inference.
+                    if "device" not in a and isinstance(a.get("deviceId"), str):
+                        a["device"] = a.get("deviceId")
+                    elif "device" not in a and isinstance(a.get("device_id"), str):
+                        a["device"] = a.get("device_id")
+
+                    # Variant: {device:'x', command:'on'} or {deviceId:'x', command:'on'} (missing type)
                     if "type" not in a and isinstance(a.get("device"), str) and isinstance(a.get("command"), str):
                         a["type"] = "command"
 
@@ -355,6 +672,8 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                     if a.get("type") == "command":
                         if "device" not in a:
                             a["device"] = a.pop("deviceId", None) or a.get("device")
+                        a.pop("deviceId", None)
+                        a.pop("device_id", None)
                         # some models use 'device' but put an object - coerce to string id if possible
                         if isinstance(a.get("device"), dict) and "id" in a["device"]:
                             a["device"] = a["device"]["id"]
@@ -411,6 +730,8 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
 
                 # Replace list in-place to avoid leaving invalid/no-op actions behind.
                 tr["actions"] = coerced_actions
+                if rescued_guards:
+                    tr["guard"] = _merge_guards(tr.get("guard"), rescued_guards)
 
     return ir
 

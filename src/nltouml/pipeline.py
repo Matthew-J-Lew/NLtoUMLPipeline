@@ -74,25 +74,12 @@ def run_pipeline(
 
     ir_schema, device_catalog, capability_catalog = load_templates(settings.templates_dir)
 
-    # 1) NL -> IR
-    if use_mock:
-        ir = mock_generate_ir(text)
-    else:
-        if not settings.openai_api_key:
-            raise PipelineError("OPENAI_API_KEY not set. Either set it, or run with --mock.")
-        ir = generate_ir_with_llm(
-            text,
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            device_catalog=device_catalog,
-            capability_catalog=capability_catalog,
-            ir_schema=ir_schema,
-        )
-
-    # Output bundle layout
+    # Output bundle layout is created before LLM calls so failed attempts can still leave
+    # behind raw-response debug artifacts.
     bundle_root = out_dir / bundle_name
     layout = ensure_bundle_dirs(bundle_root)
     baseline_dir = layout.baseline_dir
+    llm_debug_dir = baseline_dir / "llm"
 
     out_paths = {
         "ir": baseline_dir / "final.ir.json",
@@ -105,6 +92,26 @@ def run_pipeline(
         "baseline_dir": baseline_dir,
         "current_dir": layout.current_dir,
     }
+
+    # 1) NL -> IR
+    if use_mock:
+        ir = mock_generate_ir(text)
+    else:
+        if not settings.openai_api_key:
+            raise PipelineError("OPENAI_API_KEY not set. Either set it, or run with --mock.")
+        try:
+            ir = generate_ir_with_llm(
+                text,
+                api_key=settings.openai_api_key,
+                model=settings.openai_model,
+                device_catalog=device_catalog,
+                capability_catalog=capability_catalog,
+                ir_schema=ir_schema,
+                debug_dir=llm_debug_dir,
+                max_attempts=3,
+            )
+        except Exception as e:
+            raise PipelineError(f"Initial IR generation failed: {e}") from e
 
     # Write raw IR (pre-coercion) for debugging.
     write_json(out_paths["raw_ir"], ir)
@@ -122,15 +129,21 @@ def run_pipeline(
     while (not use_mock) and repairs < max_repairs and any(d.severity == "error" for d in diags):
         repairs += 1
         diag_payload = [asdict(d) for d in diags]
-        ir = repair_ir_with_llm(
-            ir,
-            diag_payload,
-            api_key=settings.openai_api_key or "",
-            model=settings.openai_model,
-            device_catalog=device_catalog,
-            capability_catalog=capability_catalog,
-            ir_schema=ir_schema,
-        )
+        try:
+            ir = repair_ir_with_llm(
+                ir,
+                diag_payload,
+                api_key=settings.openai_api_key or "",
+                model=settings.openai_model,
+                device_catalog=device_catalog,
+                capability_catalog=capability_catalog,
+                ir_schema=ir_schema,
+                debug_dir=llm_debug_dir,
+                max_attempts=2,
+                artifact_prefix=f"repair_ir_{repairs:02d}",
+            )
+        except Exception as e:
+            raise PipelineError(f"IR repair attempt {repairs} failed: {e}") from e
         ir = coerce_ir_shape(ir, device_catalog)
         ir = normalize_ir(ir)
         ir = desugar_delays_to_timer_states(ir)

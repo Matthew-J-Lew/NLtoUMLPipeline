@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from .io_utils import write_json
 from .normalize import coerce_ir_shape, normalize_ir
 from .patch_utils import validate_patch_structure
+from .plantuml import ir_to_plantuml
 
 
 def _check_schedule_normalization() -> Dict[str, Any]:
@@ -188,6 +189,39 @@ def _check_time_guard_to_schedule_trigger() -> Dict[str, Any]:
         "details": tr,
     }
 
+
+def _check_plantuml_hybrid_presentation() -> Dict[str, Any]:
+    ir = {
+        "version": "0.1",
+        "devices": [{"id": "door_front", "kind": "contactSensor"}, {"id": "light_hall", "kind": "switch"}],
+        "stateMachine": {
+            "initial": "Idle",
+            "states": [{"id": "Idle"}],
+            "transitions": [
+                {
+                    "from": "Idle",
+                    "to": "Idle",
+                    "triggers": [{"type": "becomes", "ref": {"device": "door_front", "path": "contact"}, "value": {"string": "open"}}],
+                    "actions": [{"type": "command", "device": "light_hall", "command": "on"}],
+                }
+            ],
+        },
+    }
+    puml = ir_to_plantuml(ir, title="Smoke")
+    passed = (
+        'state "Monitoring Front Door" as Idle' in puml
+        and "legend right" not in puml
+        and "Typical trigger:" not in puml
+        and "Typical effect:" not in puml
+        and "note right of Idle" not in puml
+        and "ACTION: light_hall.on()" in puml
+    )
+    return {
+        "name": "plantuml_hybrid_presentation",
+        "passed": passed,
+        "details": puml.splitlines()[:25],
+    }
+
 def _check_patch_validation() -> Dict[str, Any]:
     report = validate_patch_structure({"summary": "bad", "edits": [{"state_id": "Idle"}]})
     return {
@@ -224,6 +258,7 @@ def run_regression_checks(out_path: Optional[Path] = None) -> Dict[str, Any]:
         _check_guard_string_rescue(),
         _check_deviceid_action_rescue(),
         _check_time_guard_to_schedule_trigger(),
+        _check_plantuml_hybrid_presentation(),
         _check_patch_validation(),
         _check_patch_validation_rejects_bad_guard_payload(),
     ]

@@ -445,54 +445,147 @@ def repair_edit_patch_with_llm(
 
 
 def mock_generate_edit_patch(request_text: str, current_ir: Dict[str, Any]) -> Dict[str, Any]:
-    """Very small deterministic patch generator for demo/testing without an LLM."""
+    """Deterministic patch generator for demo/testing without an LLM.
+
+    This is intentionally heuristic. It supports the common HITL edit requests used by
+    `nlpipeline hitl-metrics` so the suite can be smoke-tested without an API key.
+    Real runs should omit --mock and use the edit agent.
+    """
+    import copy
+    import re
+
     t = request_text.lower()
+    sm = current_ir.get("stateMachine") if isinstance(current_ir.get("stateMachine"), dict) else {}
+    transitions = sm.get("transitions", []) if isinstance(sm.get("transitions"), list) else []
+
+    def actions(tr: Dict[str, Any]) -> List[Dict[str, Any]]:
+        acts = tr.get("actions")
+        return [a for a in acts if isinstance(a, dict)] if isinstance(acts, list) else []
+
+    def triggers(tr: Dict[str, Any]) -> List[Dict[str, Any]]:
+        trigs = tr.get("triggers")
+        return [tg for tg in trigs if isinstance(tg, dict)] if isinstance(trigs, list) else []
+
+    def is_cmd(a: Dict[str, Any], device: str, command: str) -> bool:
+        return a.get("type") == "command" and a.get("device") == device and a.get("command") == command
+
+    def locator_for(tr: Dict[str, Any]) -> Dict[str, Any]:
+        frm = str(tr.get("from", ""))
+        to = str(tr.get("to", ""))
+        idx = 0
+        for prior in transitions:
+            if prior is tr:
+                break
+            if isinstance(prior, dict) and prior.get("from") == frm and prior.get("to") == to:
+                idx += 1
+        out = {"from": frm, "to": to}
+        if idx:
+            out["index"] = idx
+        return out
+
+    def first_transition(pred) -> Optional[Dict[str, Any]]:
+        for tr in transitions:
+            if isinstance(tr, dict) and pred(tr):
+                return tr
+        return None
+
+    def replace_expr_lit(expr: Any, device: str, path: str, old: str, new: str) -> bool:
+        if not isinstance(expr, dict):
+            return False
+        changed = False
+        if expr.get("op") in {"eq", "neq", "lt", "lte", "gt", "gte"}:
+            args = expr.get("args") if isinstance(expr.get("args"), list) else []
+            if len(args) >= 2:
+                left, right = args[0], args[1]
+                if isinstance(left, dict) and isinstance(left.get("ref"), dict) and isinstance(right, dict) and isinstance(right.get("lit"), dict):
+                    ref = left["ref"]
+                    lit = right["lit"]
+                    if ref.get("device") == device and ref.get("path") == path and lit.get("string") == old:
+                        right["lit"] = {"string": new}
+                        changed = True
+        for child in expr.get("args", []) if isinstance(expr.get("args"), list) else []:
+            changed = replace_expr_lit(child, device, path, old, new) or changed
+        return changed
+
     edits: List[Dict[str, Any]] = []
 
-    # common demo edits
-    if "lightoff" in t:
-        edits.append({"op": "set_state_label", "state_id": "Idle", "label": "LightOff"})
-
-    # timer: "2 minutes" or "120s"
-    import re
+    # Change timeout/duration to N minutes/seconds.
     m = re.search(r"(\d+)\s*(minute|minutes)", t)
+    m2 = re.search(r"(\d+)\s*(second|seconds|s)\b", t)
+    secs: Optional[int] = None
     if m:
         secs = int(m.group(1)) * 60
-        edits.append({
-            "op": "update_transition",
-            "from": "WaitOff",
-            "to": "Idle",
-            "triggers": [{"type": "after", "seconds": secs}],
-        })
-    m2 = re.search(r"(\d+)\s*(second|seconds|s)\b", t)
-    if m2:
+    elif m2:
         secs = int(m2.group(1))
-        edits.append({
-            "op": "update_transition",
-            "from": "WaitOff",
-            "to": "Idle",
-            "triggers": [{"type": "after", "seconds": secs}],
-        })
+    if secs is not None and any(word in t for word in ["timeout", "duration", "minute", "second"]):
+        tr = first_transition(lambda x: any(tg.get("type") == "after" for tg in triggers(x)))
+        if tr is not None:
+            new_trigs = copy.deepcopy(triggers(tr))
+            for tg in new_trigs:
+                if tg.get("type") == "after":
+                    tg["seconds"] = secs
+            edits.append({"op": "update_transition", **locator_for(tr), "triggers": new_trigs})
+        else:
+            tr = first_transition(lambda x: any(a.get("type") == "delay" for a in actions(x)))
+            if tr is not None:
+                new_acts = copy.deepcopy(actions(tr))
+                for a in new_acts:
+                    if a.get("type") == "delay":
+                        a["seconds"] = secs
+                edits.append({"op": "update_transition", **locator_for(tr), "actions": new_acts})
 
-    if "notify" in t:
-        edits.append({
-            "op": "update_transition",
-            "from": "Idle",
-            "to": "LightOn",
-            "actions": [
-                {"type": "command", "ref": {"device": "light_hall"}, "command": "on", "args": []},
-                {"type": "notify", "message": "Motion detected"},
-            ],
-        })
+    # Change presence guard from not present to present.
+    if "presence" in t and "present" in t and "not present" in t:
+        tr = first_transition(lambda x: isinstance(x.get("guard"), dict))
+        if tr is not None:
+            g = copy.deepcopy(tr.get("guard"))
+            if replace_expr_lit(g, "presence_user", "presence", "not present", "present"):
+                edits.append({"op": "update_transition", **locator_for(tr), "guard": g})
+
+    # Remove notify action while preserving other actions.
+    if "remove" in t and "notification" in t:
+        tr = first_transition(lambda x: any(a.get("type") == "notify" for a in actions(x)))
+        if tr is not None:
+            new_acts = [copy.deepcopy(a) for a in actions(tr) if a.get("type") != "notify"]
+            edits.append({"op": "update_transition", **locator_for(tr), "actions": new_acts})
+
+    # Add notification action.
+    if "add" in t and "notification" in t:
+        msg_match = re.search(r'"([^"]+)"', request_text)
+        msg = msg_match.group(1) if msg_match else "Motion detected"
+        tr = first_transition(lambda x: any(is_cmd(a, "light_hall", "off") for a in actions(x)) and any(is_cmd(a, "lock_front", "lock") for a in actions(x)))
+        if tr is None:
+            tr = first_transition(lambda x: actions(x))
+        if tr is not None:
+            new_acts = copy.deepcopy(actions(tr))
+            new_acts.append({"type": "notify", "message": msg})
+            edits.append({"op": "update_transition", **locator_for(tr), "actions": new_acts})
+
+    # Change notification message.
+    if "change" in t and "notification" in t and "message" in t:
+        msg_match = re.search(r'"([^"]+)"', request_text)
+        msg = msg_match.group(1) if msg_match else "Updated notification"
+        tr = first_transition(lambda x: any(a.get("type") == "notify" for a in actions(x)))
+        if tr is not None:
+            new_acts = copy.deepcopy(actions(tr))
+            for a in new_acts:
+                if a.get("type") == "notify":
+                    a["message"] = msg
+            edits.append({"op": "update_transition", **locator_for(tr), "actions": new_acts})
+
+    # Backwards-compatible simple demo edits.
+    if not edits and "lightoff" in t:
+        edits.append({"op": "set_state_label", "state_id": "Idle", "label": "LightOff"})
 
     if not edits:
-        edits.append({"op": "set_state_label", "state_id": "Idle", "label": "Idle"})  # no-op
+        # Safe no-op so demos do not crash.
+        initial = sm.get("initial") if isinstance(sm.get("initial"), str) else "Idle"
+        edits.append({"op": "set_state_label", "state_id": initial, "label": initial})
 
     return {
         "summary": "Applied requested changes (mock).",
         "edits": edits,
     }
-
 
 def _build_repair_patch_system_prompt(
     device_catalog: Dict[str, Any],

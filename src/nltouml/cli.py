@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
       nlpipeline roundtrip --puml outputs/Bundle1/edited.puml
       nlpipeline agent-edit --bundle-name Bundle1 --request "..."
       nlpipeline regression-checks
+      nlpipeline hitl-metrics
     """
 
     p = argparse.ArgumentParser(prog="nltouml", description="NL -> IR -> PlantUML state machine")
@@ -86,6 +87,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional list of adversarial bundle names to evaluate. Defaults to the built-in bundle set.",
     )
+
+    # ----- hitl-metrics -----
+    hitl_p = sub.add_parser("hitl-metrics", help="Run paired HITL edit tests for manual PlantUML and agentic NL edits")
+    hitl_p.add_argument("--out-dir", default="hitl_metrics_out", help="Directory to write HITL metrics outputs")
+    hitl_p.add_argument(
+        "--templates-dir",
+        default=None,
+        help=(
+            "Path to templates dir. If omitted, uses repo_root/templates when running from source, "
+            "otherwise uses packaged templates shipped with the library."
+        ),
+    )
+    hitl_p.add_argument("--mock", action="store_true", help="Run without an LLM (deterministic smoke test)")
+    hitl_p.add_argument("--baseline-max-repairs", type=int, default=1, help="Max repairs allowed while generating each baseline bundle")
+    hitl_p.add_argument("--agent-max-repairs", type=int, default=1, help="Max patch repairs allowed for each agentic edit")
+    hitl_p.add_argument("--limit", type=int, default=None, help="Limit number of HITL cases (debug)")
+    hitl_p.add_argument("--manual-only", action="store_true", help="Run only the manual PlantUML edit path")
+    hitl_p.add_argument("--agent-only", action="store_true", help="Run only the agentic natural-language edit path")
+    hitl_p.add_argument("--clean", action="store_true", help="Delete --out-dir before running")
 
     # ----- roundtrip -----
     rt_p = sub.add_parser("roundtrip", help="Parse an edited PlantUML diagram back into IR + validation")
@@ -184,7 +204,7 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
-    if argv[0] in {"run", "metrics", "metrics-full", "roundtrip", "agent-edit", "refine", "regression-checks", "studio"}:
+    if argv[0] in {"run", "metrics", "metrics-full", "hitl-metrics", "roundtrip", "agent-edit", "refine", "regression-checks", "studio"}:
         return argv
     # If user started with flags ("--text" etc.), treat as legacy `run`.
     if argv[0].startswith("-"):
@@ -267,6 +287,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote summary JSON:    {out_paths['summary_json']}")
         print(f"Wrote markdown report: {out_paths['report_md']}")
         print(f"Wrote run artifacts:   {out_paths['runs_dir']}")
+        return 0
+
+    if args.command == "hitl-metrics":
+        from .hitl_metrics import run_hitl_metrics
+
+        if bool(args.manual_only) and bool(args.agent_only):
+            print("ERROR: --manual-only and --agent-only cannot be used together", file=sys.stderr)
+            return 2
+
+        settings = load_settings(templates_dir=args.templates_dir)
+        try:
+            out_paths = run_hitl_metrics(
+                out_dir=Path(args.out_dir),
+                settings=settings,
+                use_mock=bool(args.mock),
+                baseline_max_repairs=int(args.baseline_max_repairs),
+                agent_max_repairs=int(args.agent_max_repairs),
+                limit=args.limit,
+                include_manual=not bool(args.agent_only),
+                include_agent=not bool(args.manual_only),
+                clean=bool(args.clean),
+            )
+        except PipelineError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        print(f"Wrote HITL results CSV: {out_paths['results_csv']}")
+        print(f"Wrote HITL summary CSV: {out_paths['summary_csv']}")
+        print(f"Wrote HITL summary JSON:{out_paths['summary_json']}")
+        print(f"Wrote markdown report:  {out_paths['report_md']}")
+        print(f"Wrote run artifacts:    {out_paths['runs_dir']}")
         return 0
 
     if args.command == "roundtrip":

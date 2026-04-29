@@ -365,6 +365,39 @@ def _post_validate(ir: Dict[str, Any], artifact_dir: Path) -> Tuple[bool, Path]:
     return bool(report.get("ok", False)), path
 
 
+def _infer_failure_stage(row: Dict[str, Any]) -> str:
+    """Return the first pipeline stage that explains a non-successful HITL row."""
+    if row.get("hitl_success"):
+        return "success"
+    if not row.get("baseline_completed"):
+        return "baseline_generation"
+    if not row.get("baseline_det_valid"):
+        return "baseline_validation"
+    if not row.get("edit_applied"):
+        return "agent_patch" if row.get("mode") == "agentic_nl_edit" else "manual_edit"
+    if not row.get("roundtrip_or_agent_completed"):
+        return "agent_edit" if row.get("mode") == "agentic_nl_edit" else "manual_roundtrip"
+    if not row.get("regenerated_puml"):
+        return "plantuml_regeneration"
+    if not row.get("post_det_valid"):
+        return "post_edit_validation"
+    if not row.get("post_agentic_valid"):
+        return "layer5_validation"
+    if not row.get("edit_preserved"):
+        return "edit_preservation"
+    if not row.get("protected_behavior_preserved"):
+        return "protected_behavior"
+    return "unknown"
+
+
+def _failure_stage_counts(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for row in rows:
+        stage = str(row.get("failure_stage") or _infer_failure_stage(row))
+        counts[stage] = counts.get(stage, 0) + 1
+    return counts
+
+
 def _result_row_base(case: HITLCase, mode: str, bundle_name: str, bundle_root: Path) -> Dict[str, Any]:
     return {
         "test_id": f"{mode}_{case.case_id}",
@@ -387,6 +420,7 @@ def _result_row_base(case: HITLCase, mode: str, bundle_name: str, bundle_root: P
         "protected_behavior_preserved": False,
         "unintended_changes_detected": "",
         "hitl_success": False,
+        "failure_stage": "",
         "det_errors_after": "",
         "det_warnings_after": "",
         "revision_dir": "",
@@ -410,6 +444,7 @@ def _run_manual_case(
     bundle_root = runs_dir / bundle_name
     row = _result_row_base(case, "manual_puml", bundle_name, bundle_root)
     notes: List[str] = []
+    stage = "baseline_generation"
     try:
         base_paths = run_pipeline(
             text=case.scenario_text,
@@ -420,14 +455,17 @@ def _run_manual_case(
             max_repairs=baseline_max_repairs,
         )
         row["baseline_completed"] = True
+        stage = "baseline_validation"
         base_report = read_json(base_paths["validation"])
         row["baseline_det_valid"] = bool(base_report.get("ok", False))
+        stage = "manual_edit"
         base_ir = read_json(base_paths["ir"])
 
         edited_ir, edit_summary, edit_notes = case.apply_manual_edit(base_ir)
         notes.append(edit_summary)
         notes.extend(edit_notes)
         row["edit_applied"] = len(edit_notes) == 0
+        stage = "manual_roundtrip"
 
         edited_puml_path = Path(base_paths["bundle_root"]) / "hitl_edited.puml"
         write_text(edited_puml_path, ir_to_plantuml(edited_ir, title=bundle_name))
@@ -445,6 +483,7 @@ def _run_manual_case(
         row["ir_path"] = str(out_paths.get("ir", ""))
         row["validation_path"] = str(out_paths.get("validation", ""))
         row["regenerated_puml"] = Path(out_paths["puml"]).exists()
+        stage = "post_edit_validation"
 
         final_ir = read_json(out_paths["ir"])
         final_report = read_json(out_paths["validation"])
@@ -452,9 +491,11 @@ def _run_manual_case(
         row["det_errors_after"] = det_errors
         row["det_warnings_after"] = det_warnings
         row["post_det_valid"] = bool(final_report.get("ok", False))
+        stage = "layer5_validation"
         l5_ok, l5_path = _post_validate(final_ir, Path(out_paths["revision_dir"]))
         row["post_agentic_valid"] = l5_ok
         row["layer5_path"] = str(l5_path)
+        stage = "edit_preservation"
         edit_ok, protected_ok, eval_notes = case.evaluate(final_ir)
         notes.extend(eval_notes)
         row["edit_preserved"] = edit_ok
@@ -463,7 +504,10 @@ def _run_manual_case(
         row["unintended_changes_detected"] = not protected_ok
         row["hitl_success"] = bool(row["edit_applied"] and row["post_overall_valid"] and row["regenerated_puml"] and edit_ok and protected_ok)
     except Exception as e:
+        row["failure_stage"] = stage
         notes.append(f"ERROR: {e}")
+    if not row.get("failure_stage"):
+        row["failure_stage"] = _infer_failure_stage(row)
     row["notes"] = " | ".join(str(n) for n in notes if str(n).strip())
     return row
 
@@ -481,6 +525,7 @@ def _run_agent_case(
     bundle_root = runs_dir / bundle_name
     row = _result_row_base(case, "agentic_nl_edit", bundle_name, bundle_root)
     notes: List[str] = []
+    stage = "baseline_generation"
     try:
         base_paths = run_pipeline(
             text=case.scenario_text,
@@ -491,8 +536,10 @@ def _run_agent_case(
             max_repairs=baseline_max_repairs,
         )
         row["baseline_completed"] = True
+        stage = "baseline_validation"
         base_report = read_json(base_paths["validation"])
         row["baseline_det_valid"] = bool(base_report.get("ok", False))
+        stage = "agent_patch"
 
         out_paths, summary_lines = run_agent_edit(
             bundle_name=bundle_name,
@@ -510,6 +557,7 @@ def _run_agent_case(
         row["ir_path"] = str(out_paths.get("ir", ""))
         row["validation_path"] = str(out_paths.get("validation", ""))
         row["regenerated_puml"] = bool("puml" in out_paths and Path(out_paths["puml"]).exists())
+        stage = "post_edit_validation"
 
         final_ir = _read_if_exists(Path(out_paths["ir"]) if "ir" in out_paths else None)
         final_report = _read_if_exists(Path(out_paths["validation"]) if "validation" in out_paths else None)
@@ -519,9 +567,11 @@ def _run_agent_case(
             row["det_warnings_after"] = det_warnings
             row["post_det_valid"] = bool(final_report.get("ok", False))
         if final_ir is not None and "revision_dir" in out_paths:
+            stage = "layer5_validation"
             l5_ok, l5_path = _post_validate(final_ir, Path(out_paths["revision_dir"]))
             row["post_agentic_valid"] = l5_ok
             row["layer5_path"] = str(l5_path)
+            stage = "edit_preservation"
             edit_ok, protected_ok, eval_notes = case.evaluate(final_ir)
             notes.extend(eval_notes)
             row["edit_preserved"] = edit_ok
@@ -530,7 +580,10 @@ def _run_agent_case(
         row["post_overall_valid"] = bool(row["post_det_valid"] and row["post_agentic_valid"])
         row["hitl_success"] = bool(row["edit_applied"] and row["post_overall_valid"] and row["regenerated_puml"] and row["edit_preserved"] and row["protected_behavior_preserved"])
     except Exception as e:
+        row["failure_stage"] = stage
         notes.append(f"ERROR: {e}")
+    if not row.get("failure_stage"):
+        row["failure_stage"] = _infer_failure_stage(row)
     row["notes"] = " | ".join(str(n) for n in notes if str(n).strip())
     return row
 
@@ -553,6 +606,7 @@ def _summary_for_mode(rows: List[Dict[str, Any]], mode: str) -> Dict[str, Any]:
         "unintended_changes_detected": sum(1 for r in selected if r.get("unintended_changes_detected") is True),
         "hitl_success": count("hitl_success"),
         "hitl_success_rate": None if n == 0 else round(count("hitl_success") / n, 4),
+        "failure_stages": _failure_stage_counts(selected),
     }
 
 
@@ -603,15 +657,31 @@ def _write_report(path: Path, rows: List[Dict[str, Any]], summary: Dict[str, Any
             ],
         ),
         "",
+        "## Failure stage counts",
+        "",
+        _markdown_table(
+            ["Stage", "Manual PlantUML", "Agentic NL Edit", "Overall"],
+            [
+                [
+                    stage,
+                    manual.get("failure_stages", {}).get(stage, 0),
+                    agent.get("failure_stages", {}).get(stage, 0),
+                    overall.get("failure_stages", {}).get(stage, 0),
+                ]
+                for stage in sorted(set(manual.get("failure_stages", {})) | set(agent.get("failure_stages", {})) | set(overall.get("failure_stages", {})))
+            ],
+        ),
+        "",
         "## Per-test results",
         "",
         _markdown_table(
-            ["Test", "Mode", "Edit Type", "Overall Valid", "Edit Preserved", "Protected Behavior", "Success", "Notes"],
+            ["Test", "Mode", "Edit Type", "Failure Stage", "Overall Valid", "Edit Preserved", "Protected Behavior", "Success", "Notes"],
             [
                 [
                     r.get("case_id", ""),
                     r.get("mode", ""),
                     r.get("edit_type", ""),
+                    r.get("failure_stage", ""),
                     r.get("post_overall_valid", ""),
                     r.get("edit_preserved", ""),
                     r.get("protected_behavior_preserved", ""),
@@ -692,6 +762,7 @@ def run_hitl_metrics(
         "unintended_changes_detected": sum(1 for r in overall_rows if r.get("unintended_changes_detected") is True),
         "hitl_success": count_all("hitl_success"),
         "hitl_success_rate": None if n_total == 0 else round(count_all("hitl_success") / n_total, 4),
+        "failure_stages": _failure_stage_counts(overall_rows),
     }
     summary: Dict[str, Any] = {
         "config": {

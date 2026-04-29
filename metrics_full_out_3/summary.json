@@ -1,7 +1,7 @@
 {
   "config": {
     "scenarios_path": "scenarios.csv",
-    "out_dir": "metrics_full_out_3",
+    "out_dir": "metrics_final_out_3",
     "use_mock": false,
     "pre_max_repairs": 0,
     "refine_max_iters": 5,
@@ -12,31 +12,31 @@
   "scenario_benchmark": {
     "scenarios_requested": 20,
     "scenarios_completed": 20,
-    "pre_structural_valid_rate": 0.85,
-    "pre_overall_valid_rate": 0.85,
+    "pre_structural_valid_rate": 0.9,
+    "pre_overall_valid_rate": 0.9,
     "post_structural_valid_rate": 1.0,
     "post_overall_valid_rate": 1.0,
-    "pre_downstream_ready_rate": 0.85,
+    "pre_downstream_ready_rate": 0.9,
     "post_downstream_ready_rate": 1.0,
-    "repair_effective_count": 3,
+    "repair_effective_count": 2,
     "repair_effective_rate": 1.0,
-    "avg_pre_total_issues": 0.4,
-    "avg_post_total_issues": 0.2,
+    "avg_pre_total_issues": 0.3,
+    "avg_post_total_issues": 0.1,
     "avg_issues_removed": 0.2,
     "avg_iterations": 1.2,
     "avg_pre_overall_coverage": 0.9745,
-    "avg_post_overall_coverage": 0.962
+    "avg_post_overall_coverage": 0.9745
   },
   "paraphrase_benchmark": {
     "pairs_evaluated": 20,
-    "primary_pre_valid_rate": 0.85,
-    "paraphrase_pre_valid_rate": 0.9,
+    "primary_pre_valid_rate": 0.9,
+    "paraphrase_pre_valid_rate": 0.85,
     "primary_post_valid_rate": 1.0,
-    "paraphrase_post_valid_rate": 0.95,
+    "paraphrase_post_valid_rate": 1.0,
     "pre_validity_consistency_rate": 0.85,
-    "post_validity_consistency_rate": 0.95,
-    "post_exact_consistency_rate": 0.45,
-    "mean_post_similarity_score": 0.725
+    "post_validity_consistency_rate": 1.0,
+    "post_exact_consistency_rate": 0.5,
+    "mean_post_similarity_score": 0.7625
   },
   "adversarial_suite": {
     "bundles_requested": 6,
@@ -47,14 +47,14 @@
     "final_valid_count": 6,
     "final_valid_rate": 1.0,
     "avg_issues_removed": 5.8333,
-    "avg_iterations": 2.3333
+    "avg_iterations": 2.1667
   },
   "artifacts": {
-    "scenario_results_csv": "metrics_full_out_3\\scenario_results.csv",
-    "paraphrase_results_csv": "metrics_full_out_3\\paraphrase_results.csv",
-    "adversarial_results_csv": "metrics_full_out_3\\adversarial_results.csv",
-    "summary_csv": "metrics_full_out_3\\summary.csv",
-    "summary_json": "metrics_full_out_3\\summary.json",
-    "report_md": "metrics_full_out_3\\report.md"
+    "scenario_results_csv": "metrics_final_out_3\\scenario_results.csv",
+    "paraphrase_results_csv": "metrics_final_out_3\\paraphrase_results.csv",
+    "adversarial_results_csv": "metrics_final_out_3\\adversarial_results.csv",
+    "summary_csv": "metrics_final_out_3\\summary.csv",
+    "summary_json": "metrics_final_out_3\\summary.json",
+    "report_md": "metrics_final_out_3\\report.md"
   }
 }

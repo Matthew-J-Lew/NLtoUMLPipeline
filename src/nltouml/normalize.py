@@ -14,6 +14,117 @@ def _to_literal(v: Any) -> Dict[str, Any]:
     return {"string": "" if v is None else str(v)}
 
 
+def _coerce_literal_payload(value: Any) -> Dict[str, Any]:
+    """Coerce common near-miss literal payloads into the canonical literal shape.
+
+    Canonical IR literals use exactly one of ``string``, ``number``, or ``bool``.
+    LLM-produced patches occasionally use raw primitives or variants such as
+    ``{"int": 21}``. Normalizing here prevents those near misses from turning
+    into schema/runtime failures later in the pipeline.
+    """
+    if isinstance(value, dict):
+        if "string" in value:
+            return {"string": "" if value.get("string") is None else str(value.get("string"))}
+        if "number" in value:
+            n = value.get("number")
+            if isinstance(n, (int, float)) and not isinstance(n, bool):
+                return {"number": n}
+            if isinstance(n, str):
+                try:
+                    return {"number": float(n) if "." in n else int(n)}
+                except ValueError:
+                    pass
+            return _to_literal(n)
+        if "bool" in value:
+            return {"bool": bool(value.get("bool"))}
+
+        # Common LLM aliases.
+        for key in ("int", "integer", "float", "double"):
+            if key in value:
+                n = value.get(key)
+                if isinstance(n, (int, float)) and not isinstance(n, bool):
+                    return {"number": int(n) if key in {"int", "integer"} else float(n)}
+                return _to_literal(n)
+
+        # Occasionally a literal is wrapped one level too deep.
+        if "value" in value and len(value) == 1:
+            return _coerce_literal_payload(value.get("value"))
+        if "lit" in value and len(value) == 1:
+            return _coerce_literal_payload(value.get("lit"))
+
+        # Last-resort: preserve information as a string rather than crashing.
+        return {"string": str(value)}
+
+    return _to_literal(value)
+
+
+def _coerce_expr_shape(expr: Any) -> Optional[Dict[str, Any]]:
+    """Coerce common near-miss guard expressions into canonical expression IR.
+
+    The canonical expression language uses ref/lit leaves and {op,args} internal
+    nodes. This accepts older/LLM variants such as {all:[...]}, {any:[...]},
+    {not: ...}, primitive lit payloads, and {int: ...} literal aliases.
+    """
+    if isinstance(expr, str):
+        parsed = _parse_guard_string_expr(expr)
+        return parsed if isinstance(parsed, dict) else None
+
+    if not isinstance(expr, dict):
+        return None
+
+    if "ref" in expr:
+        ref = expr.get("ref")
+        if isinstance(ref, dict):
+            dev = ref.get("device") or ref.get("deviceId") or ref.get("device_id")
+            path = ref.get("path") or ref.get("attribute") or ref.get("attr") or ref.get("property") or ref.get("prop")
+            if isinstance(dev, str) and isinstance(path, str):
+                return {"ref": {"device": dev, "path": path}}
+        return expr
+
+    if "lit" in expr:
+        return {"lit": _coerce_literal_payload(expr.get("lit"))}
+
+    if "literal" in expr and len(expr) == 1:
+        return {"lit": _coerce_literal_payload(expr.get("literal"))}
+
+    # Old-style boolean combinators used by earlier patches.
+    for key, op in (("all", "and"), ("and", "and"), ("any", "or"), ("or", "or")):
+        if key in expr and isinstance(expr.get(key), list):
+            args = [_coerce_expr_shape(a) for a in expr.get(key, [])]
+            return {"op": op, "args": [a for a in args if isinstance(a, dict)]}
+
+    if "not" in expr:
+        child = _coerce_expr_shape(expr.get("not"))
+        return {"op": "not", "args": [child] if isinstance(child, dict) else []}
+
+    # Shortcut condition object sometimes emitted by an edit agent.
+    dev = expr.get("device") or expr.get("deviceId") or expr.get("device_id")
+    path = expr.get("path") or expr.get("attribute") or expr.get("attr") or expr.get("property") or expr.get("prop")
+    if isinstance(dev, str) and isinstance(path, str):
+        raw_value = expr.get("value")
+        if raw_value is None:
+            raw_value = expr.get("equals") or expr.get("state") or expr.get("expected")
+        if raw_value is not None:
+            op_raw = expr.get("op") or expr.get("operator") or expr.get("comparison") or "eq"
+            op_map = {"==": "eq", "equals": "eq", "is": "eq", "eq": "eq", "!=": "neq", "not_equals": "neq", "is_not": "neq", "neq": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte"}
+            op = op_map.get(str(op_raw).strip().lower(), "eq")
+            return {"op": op, "args": [{"ref": {"device": dev, "path": path}}, {"lit": _coerce_literal_payload(raw_value)}]}
+
+    if "op" in expr:
+        op = expr.get("op")
+        op_map = {"&&": "and", "||": "or", "==": "eq", "!=": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "equals": "eq", "not_equals": "neq"}
+        if isinstance(op, str):
+            op = op_map.get(op.strip().lower(), op.strip().lower())
+        args = expr.get("args") if isinstance(expr.get("args"), list) else []
+        coerced_args = []
+        for arg in args:
+            coerced = _coerce_expr_shape(arg)
+            coerced_args.append(coerced if isinstance(coerced, dict) else arg)
+        return {"op": op, "args": coerced_args}
+
+    return expr
+
+
 def _unit_seconds(duration: Any, unit: Any) -> Any:
     """Convert duration+unit into seconds if possible."""
     if not isinstance(duration, (int, float)):
@@ -156,7 +267,7 @@ def _token_to_literal(token: str) -> Optional[Dict[str, Any]]:
     s = token.strip()
     if not s:
         return None
-    if (s.startswith(""") and s.endswith(""")) or (s.startswith("'") and s.endswith("'")):
+    if (s.startswith("\"") and s.endswith("\"")) or (s.startswith("'") and s.endswith("'")):
         return {"string": s[1:-1]}
     sl = s.lower()
     if sl == "true":
@@ -258,6 +369,11 @@ def _extract_schedule_triggers_from_guard_string(text: str) -> List[Dict[str, An
 
 def _coerce_transition_guard_in_place(tr: Dict[str, Any]) -> None:
     guard = tr.get("guard")
+    if isinstance(guard, dict):
+        coerced = _coerce_expr_shape(guard)
+        if isinstance(coerced, dict):
+            tr["guard"] = coerced
+        return
     if not isinstance(guard, str):
         return
     parsed = _parse_guard_string_expr(guard)
@@ -592,10 +708,7 @@ def coerce_ir_shape(ir: Dict[str, Any], device_catalog: Dict[str, Any]) -> Dict[
                                 v = t.get("becomes")
                             if v is None:
                                 v = t.get("equals") or t.get("state") or t.get("val")
-                            if isinstance(v, dict) and any(k in v for k in ("string", "number", "bool")):
-                                new_t["value"] = v
-                            else:
-                                new_t["value"] = _to_literal(v)
+                            new_t["value"] = _coerce_literal_payload(v)
 
                         elif typ == "schedule":
                             cron = t.get("cron") or t.get("schedule") or t.get("time") or t.get("at") or t.get("event")
@@ -761,7 +874,8 @@ VALUE_SYNONYMS: Dict[str, str] = {
 }
 
 
-def _normalize_literal(lit: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_literal(lit: Any) -> Dict[str, Any]:
+    lit = _coerce_literal_payload(lit)
     if "string" in lit:
         s = str(lit["string"]).strip()
         s_lower = s.lower()
@@ -775,7 +889,11 @@ def normalize_ir(ir: Dict[str, Any]) -> Dict[str, Any]:
     """Return a shallow-normalized copy of IR (in-place modifications for simplicity)."""
     def walk_expr(expr: Any) -> None:
         if isinstance(expr, dict):
-            if "lit" in expr and isinstance(expr["lit"], dict):
+            coerced = _coerce_expr_shape(expr)
+            if isinstance(coerced, dict) and coerced is not expr:
+                expr.clear()
+                expr.update(coerced)
+            if "lit" in expr:
                 expr["lit"] = _normalize_literal(expr["lit"])
             if "op" in expr and "args" in expr:
                 for a in expr.get("args", []):
@@ -809,6 +927,9 @@ def normalize_ir(ir: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(tr, dict):
             walk_triggers(tr.get("triggers"))
             if "guard" in tr:
+                coerced_guard = _coerce_expr_shape(tr["guard"])
+                if isinstance(coerced_guard, dict):
+                    tr["guard"] = coerced_guard
                 walk_expr(tr["guard"])
             walk_actions(tr.get("actions"))
 
@@ -817,7 +938,10 @@ def normalize_ir(ir: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(st, dict):
             inv = st.get("invariants")
             if isinstance(inv, list):
-                for e in inv:
-                    walk_expr(e)
+                for idx, e in enumerate(inv):
+                    coerced_inv = _coerce_expr_shape(e)
+                    if isinstance(coerced_inv, dict):
+                        inv[idx] = coerced_inv
+                    walk_expr(inv[idx])
 
     return ir

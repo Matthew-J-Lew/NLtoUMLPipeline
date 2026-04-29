@@ -9,22 +9,26 @@
   },
   "manual_puml": {
     "tests": 6,
-    "baseline_completed": 5,
-    "edit_applied": 5,
+    "baseline_completed": 6,
+    "edit_applied": 6,
     "post_det_valid": 5,
-    "post_agentic_valid": 5,
+    "post_agentic_valid": 6,
     "post_overall_valid": 5,
-    "regenerated_puml": 5,
-    "edit_preserved": 5,
-    "protected_behavior_preserved": 5,
+    "regenerated_puml": 6,
+    "edit_preserved": 6,
+    "protected_behavior_preserved": 6,
     "unintended_changes_detected": 0,
     "hitl_success": 5,
-    "hitl_success_rate": 0.8333
+    "hitl_success_rate": 0.8333,
+    "failure_stages": {
+      "success": 5,
+      "baseline_validation": 1
+    }
   },
   "agentic_nl_edit": {
     "tests": 6,
-    "baseline_completed": 5,
-    "edit_applied": 5,
+    "baseline_completed": 6,
+    "edit_applied": 6,
     "post_det_valid": 5,
     "post_agentic_valid": 5,
     "post_overall_valid": 5,
@@ -33,20 +37,29 @@
     "protected_behavior_preserved": 5,
     "unintended_changes_detected": 0,
     "hitl_success": 5,
-    "hitl_success_rate": 0.8333
+    "hitl_success_rate": 0.8333,
+    "failure_stages": {
+      "success": 5,
+      "agent_edit": 1
+    }
   },
   "overall": {
     "tests": 12,
-    "baseline_completed": 10,
-    "edit_applied": 10,
+    "baseline_completed": 12,
+    "edit_applied": 12,
     "post_det_valid": 10,
-    "post_agentic_valid": 10,
+    "post_agentic_valid": 11,
     "post_overall_valid": 10,
-    "regenerated_puml": 10,
-    "edit_preserved": 10,
-    "protected_behavior_preserved": 10,
+    "regenerated_puml": 11,
+    "edit_preserved": 11,
+    "protected_behavior_preserved": 11,
     "unintended_changes_detected": 0,
     "hitl_success": 10,
-    "hitl_success_rate": 0.8333
+    "hitl_success_rate": 0.8333,
+    "failure_stages": {
+      "success": 10,
+      "baseline_validation": 1,
+      "agent_edit": 1
+    }
   }
 }

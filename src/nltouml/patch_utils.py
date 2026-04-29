@@ -17,7 +17,102 @@ def _is_non_empty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _coerce_literal_payload(value: Any) -> Dict[str, Any]:
+    """Coerce near-miss literal payloads into canonical patch literal shape."""
+    if isinstance(value, dict):
+        if "string" in value:
+            return {"string": "" if value.get("string") is None else str(value.get("string"))}
+        if "number" in value:
+            n = value.get("number")
+            if isinstance(n, (int, float)) and not isinstance(n, bool):
+                return {"number": n}
+            if isinstance(n, str):
+                try:
+                    return {"number": float(n) if "." in n else int(n)}
+                except ValueError:
+                    pass
+            return {"string": "" if n is None else str(n)}
+        if "bool" in value:
+            return {"bool": bool(value.get("bool"))}
+        for key in ("int", "integer", "float", "double"):
+            if key in value:
+                n = value.get(key)
+                if isinstance(n, (int, float)) and not isinstance(n, bool):
+                    return {"number": int(n) if key in {"int", "integer"} else float(n)}
+                return {"string": "" if n is None else str(n)}
+        if "value" in value and len(value) == 1:
+            return _coerce_literal_payload(value.get("value"))
+        if "lit" in value and len(value) == 1:
+            return _coerce_literal_payload(value.get("lit"))
+        return {"string": str(value)}
+    if isinstance(value, bool):
+        return {"bool": value}
+    if isinstance(value, (int, float)):
+        return {"number": value}
+    return {"string": "" if value is None else str(value)}
+
+
+def _coerce_expr_shape(expr: Any) -> Any:
+    """Normalize guard expression near-misses before patch validation.
+
+    This accepts common LLM patch variants such as raw primitive literals,
+    {"int": 21}, and older boolean shapes like {"all": [...]}.
+    """
+    if not isinstance(expr, dict):
+        return expr
+
+    if "ref" in expr:
+        ref = expr.get("ref")
+        if isinstance(ref, dict):
+            dev = ref.get("device") or ref.get("deviceId") or ref.get("device_id")
+            path = ref.get("path") or ref.get("attribute") or ref.get("attr") or ref.get("property") or ref.get("prop")
+            if _is_non_empty_str(dev) and _is_non_empty_str(path):
+                return {"ref": {"device": dev, "path": path}}
+        return expr
+
+    if "lit" in expr:
+        return {"lit": _coerce_literal_payload(expr.get("lit"))}
+
+    if "literal" in expr and len(expr) == 1:
+        return {"lit": _coerce_literal_payload(expr.get("literal"))}
+
+    for key, op in (("all", "and"), ("and", "and"), ("any", "or"), ("or", "or")):
+        if key in expr and isinstance(expr.get(key), list):
+            return {"op": op, "args": [_coerce_expr_shape(a) for a in expr.get(key, [])]}
+
+    if "not" in expr:
+        return {"op": "not", "args": [_coerce_expr_shape(expr.get("not"))]}
+
+    # Condition shortcut produced by some edit-agent outputs.
+    dev = expr.get("device") or expr.get("deviceId") or expr.get("device_id")
+    path = expr.get("path") or expr.get("attribute") or expr.get("attr") or expr.get("property") or expr.get("prop")
+    if _is_non_empty_str(dev) and _is_non_empty_str(path):
+        raw_value = expr.get("value")
+        if raw_value is None:
+            raw_value = expr.get("equals") or expr.get("state") or expr.get("expected")
+        if raw_value is not None:
+            op_raw = expr.get("op") or expr.get("operator") or expr.get("comparison") or "eq"
+            op_map = {"==": "eq", "equals": "eq", "is": "eq", "eq": "eq", "!=": "neq", "not_equals": "neq", "is_not": "neq", "neq": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte"}
+            op = op_map.get(str(op_raw).strip().lower(), "eq")
+            return {"op": op, "args": [{"ref": {"device": dev, "path": path}}, {"lit": _coerce_literal_payload(raw_value)}]}
+
+    if "op" in expr:
+        op = expr.get("op")
+        op_map = {"&&": "and", "||": "or", "==": "eq", "!=": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "equals": "eq", "not_equals": "neq"}
+        if isinstance(op, str):
+            op = op_map.get(op.strip().lower(), op.strip().lower())
+        args = expr.get("args") if isinstance(expr.get("args"), list) else []
+        return {"op": op, "args": [_coerce_expr_shape(a) for a in args]}
+
+    return expr
+
+
 def _validate_expr_shape(expr: Any, path: str, issues: List[str]) -> None:
+    if isinstance(expr, dict):
+        coerced = _coerce_expr_shape(expr)
+        if isinstance(coerced, dict) and coerced is not expr:
+            expr.clear()
+            expr.update(coerced)
     if not isinstance(expr, dict):
         issues.append(f"{path} must be an expression object, got {type(expr).__name__}.")
         return
@@ -131,6 +226,9 @@ def _validate_action_shape(action: Any, path: str, issues: List[str]) -> None:
 
 def _validate_transition_payload(edit: Dict[str, Any], idx: int, issues: List[str]) -> None:
     if "guard" in edit:
+        coerced_guard = _coerce_expr_shape(edit.get("guard"))
+        if isinstance(coerced_guard, dict):
+            edit["guard"] = coerced_guard
         _validate_expr_shape(edit.get("guard"), f"Edit #{idx}.guard", issues)
     if "triggers" in edit:
         triggers = edit.get("triggers")

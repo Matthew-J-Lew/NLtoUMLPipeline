@@ -338,7 +338,7 @@ This is useful for checking whether an edit only changed the intended part of th
 
 Manual PlantUML editing is intended for technical users who want direct control over the diagram artifact.
 
-![AegisMod Studio PlantUML editing mode](./images/studio_plantuml_edit.png)
+![AegisMod Studio PlantUML editing mode](./images/studio_PlantUML_edit.png)
 
 ### When to use this mode
 
